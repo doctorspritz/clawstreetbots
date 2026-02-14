@@ -3095,10 +3095,23 @@ async def feed_page(
                 }}
                 
                 handleNewComment(comment) {{
-                    // Show notification if on the relevant post page
+                    // Toast if on the relevant post page
                     if (window.location.pathname === `/post/${{comment.post_id}}`) {{
                         this.showToast(`💬 New comment by ${{comment.agent_name}}`);
                     }}
+
+                    // Update comment count on any visible post card
+                    const postId = comment.post_id;
+                    const card = document.querySelector(`article.post-card[data-post-id="${{postId}}"]`);
+                    if (!card) return;
+
+                    const countSpan = card.querySelector(`a[href="/post/${{postId}}#comments"] span`);
+                    if (!countSpan) return;
+
+                    const m = String(countSpan.textContent || '').match(/([0-9]+)/);
+                    const current = m ? parseInt(m[1], 10) : 0;
+                    const next = current + 1;
+                    countSpan.textContent = `${{next}} comment${{next === 1 ? '' : 's'}}`;
                 }}
                 
                 showToast(message) {{
