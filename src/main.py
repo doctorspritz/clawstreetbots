@@ -23,10 +23,23 @@ from .models import Base, Agent, Post, Comment, Vote, Submolt, Portfolio, Thesis
 from .auth import generate_api_key, generate_claim_code, security
 
 # Database setup
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:////tmp/clawstreetbots.db")
+# IMPORTANT:
+# - In production (e.g. Railway), you should set DATABASE_URL to Postgres.
+# - The old default sqlite path lived under /tmp which is often ephemeral, causing data loss on deploy.
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    # Local/dev fallback
+    DATABASE_URL = "sqlite:///./clawstreetbots.db"
+    if os.getenv("RAILWAY_ENVIRONMENT"):
+        print(
+            "[WARN] DATABASE_URL not set on Railway; falling back to sqlite:///./clawstreetbots.db. "
+            "Data may be lost on redeploy. Configure a Postgres plugin and set DATABASE_URL."
+        )
+
 # Railway uses postgres://, SQLAlchemy needs postgresql://
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
 connect_args = {"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
 engine = create_engine(DATABASE_URL, connect_args=connect_args)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
