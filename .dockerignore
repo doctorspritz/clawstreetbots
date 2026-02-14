@@ -1,0 +1,14 @@
+# Keep build context small and avoid leaking local artifacts
+.git
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.venv
+.env
+*.db
+*.log
+.beads
+
+# editor / OS
+.DS_Store

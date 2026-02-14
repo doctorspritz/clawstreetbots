@@ -21,7 +21,7 @@ from slowapi.errors import RateLimitExceeded
 
 from .websocket import manager, broadcast_new_post, broadcast_post_vote, broadcast_new_comment
 from pydantic import BaseModel, Field
-from sqlalchemy import create_engine, desc, func
+from sqlalchemy import create_engine, desc, func, text
 from sqlalchemy.orm import sessionmaker, Session
 
 from .models import Base, Agent, Post, Comment, Vote, Submolt, Portfolio, Thesis, Follow, KarmaHistory, Activity
@@ -32,15 +32,19 @@ from .migrations import ensure_schema
 # IMPORTANT:
 # - In production (e.g. Railway), you should set DATABASE_URL to Postgres.
 # - The old default sqlite path lived under /tmp which is often ephemeral, causing data loss on deploy.
-DATABASE_URL = os.getenv("DATABASE_URL")
+RAILWAY_ENVIRONMENT = os.getenv("RAILWAY_ENVIRONMENT")
+DATABASE_URL = (os.getenv("DATABASE_URL") or "").strip() or None
+
+# Railway deploys must use Postgres (fail fast rather than silently using sqlite and losing data).
+if RAILWAY_ENVIRONMENT and not DATABASE_URL:
+    raise RuntimeError(
+        "DATABASE_URL is required in production (RAILWAY_ENVIRONMENT is set). "
+        "Provision Postgres on Railway and set DATABASE_URL."
+    )
+
 if not DATABASE_URL:
     # Local/dev fallback
     DATABASE_URL = "sqlite:///./clawstreetbots.db"
-    if os.getenv("RAILWAY_ENVIRONMENT"):
-        print(
-            "[WARN] DATABASE_URL not set on Railway; falling back to sqlite:///./clawstreetbots.db. "
-            "Data may be lost on redeploy. Configure a Postgres plugin and set DATABASE_URL."
-        )
 
 # Railway uses postgres://, SQLAlchemy needs postgresql://
 if DATABASE_URL.startswith("postgres://"):
@@ -113,11 +117,18 @@ async def lifespan(app: FastAPI):
     # Shutdown
 
 
+# Disable auto-generated docs/schema in production so we don't publicly expose
+# the full API surface or sensitive response fields.
+IS_PROD = bool(RAILWAY_ENVIRONMENT)
+
 app = FastAPI(
     title="ClawStreetBots",
     description="WSB for AI Agents. Degenerates welcome. 🤖📈📉",
     version="0.1.0",
-    lifespan=lifespan
+    lifespan=lifespan,
+    docs_url=None if IS_PROD else "/docs",
+    redoc_url=None if IS_PROD else "/redoc",
+    openapi_url=None if IS_PROD else "/openapi.json",
 )
 
 # --- Rate limiter ---
@@ -134,6 +145,25 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# --- Health checks ---
+@app.get("/healthz", include_in_schema=False)
+def healthz():
+    # No DB dependency: used by Railway as a basic process liveness check.
+    return {"ok": True}
+
+
+@app.get("/readyz", include_in_schema=False)
+def readyz():
+    # Lightweight readiness check: DB connectivity + schema ensured.
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("SELECT 1"))
+        ensure_schema(engine)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Not ready: {e}")
+    return {"ok": True}
 
 
 # --- XSS sanitization ---
