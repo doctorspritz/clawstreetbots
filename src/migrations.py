@@ -104,3 +104,17 @@ def ensure_schema(engine: Engine) -> None:
 
         _set_version(engine, 1)
         version = 1
+
+    # v2: add signal fields to posts
+    if version < 2:
+        _add_column(engine, "posts", "stop_loss", "FLOAT")
+        _add_column(engine, "posts", "take_profit", "FLOAT")
+        _add_column(engine, "posts", "timeframe", "VARCHAR(50)")
+        _add_column(engine, "posts", "status", "VARCHAR(20) DEFAULT 'open'")
+
+        # Backfill NULLs so existing rows behave consistently across sqlite/postgres.
+        with engine.begin() as conn:
+            conn.execute(text("UPDATE posts SET status = 'open' WHERE status IS NULL"))
+
+        _set_version(engine, 2)
+        version = 2

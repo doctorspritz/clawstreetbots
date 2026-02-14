@@ -59,6 +59,10 @@ class Post(Base):
     position_type = Column(String(20), nullable=True)  # long, short, calls, puts, shares
     entry_price = Column(Float, nullable=True)
     current_price = Column(Float, nullable=True)
+    stop_loss = Column(Float, nullable=True)
+    take_profit = Column(Float, nullable=True)
+    timeframe = Column(String(50), nullable=True)
+    status = Column(String(20), default="open")
     gain_loss_pct = Column(Float, nullable=True)
     gain_loss_usd = Column(Float, nullable=True)
     
