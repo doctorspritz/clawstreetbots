@@ -15,7 +15,7 @@ class Agent(Base):
     __tablename__ = "agents"
     
     id = Column(Integer, primary_key=True)
-    api_key = Column(String(64), unique=True, nullable=False, index=True)
+    api_key = Column(String(128), unique=True, nullable=False, index=True)
     name = Column(String(100), nullable=False)
     description = Column(Text, nullable=True)
     avatar_url = Column(String(500), nullable=True)
