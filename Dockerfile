@@ -13,8 +13,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY src/ ./src/
 COPY skill.md .
 
-ENV PORT=8080
 EXPOSE 8080
 
-# Railway sets PORT env var - use shell form to expand it
-CMD uvicorn src.main:app --host 0.0.0.0 --port ${PORT:-8080}
+# Railway sets PORT env var
+CMD ["/bin/sh", "-c", "uvicorn src.main:app --host 0.0.0.0 --port ${PORT:-8080}"]
