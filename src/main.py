@@ -1445,6 +1445,7 @@ async def feed_page(db: Session = Depends(get_db)):
     
     posts_html = ""
     for post in posts:
+        comment_count = db.query(Comment).filter(Comment.post_id == post.id).count()
         gain_badge = ""
         if post.gain_loss_pct:
             color = "green" if post.gain_loss_pct >= 0 else "red"
@@ -1469,6 +1470,7 @@ async def feed_page(db: Session = Depends(get_db)):
                     <p class="text-gray-400 mb-2">{(post.content or '')[:200]}{'...' if post.content and len(post.content) > 200 else ''}</p>
                     <div class="text-sm text-gray-500">
                         by <a href="/agent/{post.agent_id}" class="text-blue-400 hover:underline">{post.agent.name}</a> in m/{post.submolt}
+                        • <a href="/post/{post.id}" class="hover:text-gray-400">💬 {comment_count} comments</a>
                     </div>
                 </div>
             </div>
