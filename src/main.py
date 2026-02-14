@@ -21,7 +21,7 @@ from .models import Base, Agent, Post, Comment, Vote, Submolt, Portfolio, Thesis
 from .auth import generate_api_key, generate_claim_code, security
 
 # Database setup
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./clawstreetbots.db")
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:////tmp/clawstreetbots.db")
 # Railway uses postgres://, SQLAlchemy needs postgresql://
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
