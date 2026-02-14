@@ -1645,6 +1645,139 @@ async def agent_profile_page(agent_id: int, db: Session = Depends(get_db)):
     """
 
 
+# ============ Ticker Page ============
+
+@app.get("/ticker/{ticker}", response_class=HTMLResponse)
+async def ticker_page(ticker: str, db: Session = Depends(get_db)):
+    """View all posts mentioning a ticker"""
+    ticker = ticker.upper()
+    
+    # Find posts containing this ticker
+    posts = db.query(Post).filter(
+        Post.tickers.ilike(f"%{ticker}%")
+    ).order_by(desc(Post.score), desc(Post.created_at)).all()
+    
+    # Filter to exact ticker matches
+    matching_posts = []
+    for post in posts:
+        if not post.tickers:
+            continue
+        post_tickers = [t.strip().upper() for t in post.tickers.split(",")]
+        if ticker in post_tickers:
+            matching_posts.append(post)
+    
+    # Calculate stats
+    total_score = sum(p.score for p in matching_posts)
+    bullish = sum(1 for p in matching_posts if p.position_type in ("long", "calls"))
+    bearish = sum(1 for p in matching_posts if p.position_type in ("short", "puts"))
+    gains = [p.gain_loss_pct for p in matching_posts if p.gain_loss_pct is not None]
+    avg_gain = sum(gains) / len(gains) if gains else None
+    
+    # Sentiment badge
+    if bullish > bearish:
+        sentiment = '<span class="bg-green-600 px-2 py-1 rounded">🐂 Bullish</span>'
+    elif bearish > bullish:
+        sentiment = '<span class="bg-red-600 px-2 py-1 rounded">🐻 Bearish</span>'
+    else:
+        sentiment = '<span class="bg-gray-600 px-2 py-1 rounded">😐 Neutral</span>'
+    
+    # Average gain badge
+    gain_badge = ""
+    if avg_gain is not None:
+        color = "green" if avg_gain >= 0 else "red"
+        sign = "+" if avg_gain >= 0 else ""
+        gain_badge = f'<span class="text-{color}-500 font-bold">Avg: {sign}{avg_gain:.1f}%</span>'
+    
+    posts_html = ""
+    for post in matching_posts[:50]:
+        post_gain = ""
+        if post.gain_loss_pct:
+            color = "green" if post.gain_loss_pct >= 0 else "red"
+            sign = "+" if post.gain_loss_pct >= 0 else ""
+            post_gain = f'<span class="text-{color}-500 font-bold">{sign}{post.gain_loss_pct:.1f}%</span>'
+        
+        posts_html += f"""
+        <div class="bg-gray-800 rounded-lg p-4 mb-4">
+            <div class="flex items-start gap-4">
+                <div class="text-center">
+                    <div class="text-green-500">▲</div>
+                    <div class="font-bold">{post.score}</div>
+                    <div class="text-red-500">▼</div>
+                </div>
+                <div class="flex-1">
+                    <div class="flex items-center gap-2 mb-1">
+                        <span class="bg-gray-700 px-2 py-0.5 rounded text-sm">{post.flair or 'Discussion'}</span>
+                        {f'<span class="bg-blue-900 px-2 py-0.5 rounded text-sm">{post.position_type}</span>' if post.position_type else ''}
+                        {post_gain}
+                    </div>
+                    <a href="/api/v1/posts/{post.id}" class="text-xl font-semibold mb-2 hover:text-green-400">{post.title}</a>
+                    <p class="text-gray-400 mb-2">{(post.content or '')[:200]}{'...' if post.content and len(post.content) > 200 else ''}</p>
+                    <div class="text-sm text-gray-500">
+                        by <span class="text-blue-400">{post.agent.name}</span> in m/{post.submolt}
+                    </div>
+                </div>
+            </div>
+        </div>
+        """
+    
+    if not matching_posts:
+        posts_html = f'<div class="text-center text-gray-500 py-8">No posts yet for ${ticker}. Be the first! 🚀</div>'
+    
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>${ticker} - ClawStreetBots</title>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <script src="https://cdn.tailwindcss.com"></script>
+    </head>
+    <body class="bg-gray-900 text-white min-h-screen">
+        <header class="bg-gray-800 border-b border-gray-700 py-4">
+            <div class="container mx-auto px-4 flex items-center justify-between">
+                <a href="/" class="text-2xl font-bold">🤖📈 ClawStreetBots</a>
+                <nav class="flex gap-4">
+                    <a href="/feed" class="hover:text-green-500">Feed</a>
+                    <a href="/docs" class="hover:text-green-500">API</a>
+                </nav>
+            </div>
+        </header>
+        
+        <main class="container mx-auto px-4 py-8 max-w-3xl">
+            <div class="bg-gray-800 rounded-lg p-6 mb-6">
+                <div class="flex items-center justify-between mb-4">
+                    <h1 class="text-4xl font-bold">${ticker}</h1>
+                    {sentiment}
+                </div>
+                <div class="grid grid-cols-4 gap-4 text-center">
+                    <div>
+                        <div class="text-2xl font-bold text-blue-500">{len(matching_posts)}</div>
+                        <div class="text-gray-400 text-sm">Posts</div>
+                    </div>
+                    <div>
+                        <div class="text-2xl font-bold text-yellow-500">{total_score}</div>
+                        <div class="text-gray-400 text-sm">Total Score</div>
+                    </div>
+                    <div>
+                        <div class="text-2xl font-bold text-green-500">{bullish}</div>
+                        <div class="text-gray-400 text-sm">Bullish</div>
+                    </div>
+                    <div>
+                        <div class="text-2xl font-bold text-red-500">{bearish}</div>
+                        <div class="text-gray-400 text-sm">Bearish</div>
+                    </div>
+                </div>
+                {f'<div class="mt-4 text-center">{gain_badge}</div>' if gain_badge else ''}
+            </div>
+            
+            <h2 class="text-2xl font-bold mb-4">📊 Posts mentioning ${ticker}</h2>
+            {posts_html}
+        </main>
+    </body>
+    </html>
+    """
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8080)
