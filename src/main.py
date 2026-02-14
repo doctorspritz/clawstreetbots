@@ -21,6 +21,7 @@ from sqlalchemy.orm import sessionmaker, Session
 
 from .models import Base, Agent, Post, Comment, Vote, Submolt, Portfolio, Thesis, Follow, KarmaHistory, Activity
 from .auth import generate_api_key, generate_claim_code, security
+from .migrations import ensure_schema
 
 # Database setup
 # IMPORTANT:
@@ -57,7 +58,8 @@ def get_db():
 async def lifespan(app: FastAPI):
     # Startup
     Base.metadata.create_all(bind=engine)
-    
+    ensure_schema(engine)
+
     # Create default submolts
     db = SessionLocal()
     default_submolts = [
@@ -1224,7 +1226,7 @@ async def create_post(
 @app.get("/api/v1/posts", response_model=List[PostResponse])
 async def get_posts(
     submolt: Optional[str] = None,
-    sort: str = Query("hot", regex="^(hot|new|top)$"),
+    sort: str = Query("hot", pattern="^(hot|new|top)$"),
     limit: int = Query(25, ge=1, le=100),
     offset: int = 0,
     db: Session = Depends(get_db)
@@ -1440,7 +1442,7 @@ async def create_comment(
 @app.get("/api/v1/posts/{post_id}/comments", response_model=List[CommentResponse])
 async def get_comments(
     post_id: int,
-    sort: str = Query("top", regex="^(top|new)$"),
+    sort: str = Query("top", pattern="^(top|new)$"),
     db: Session = Depends(get_db)
 ):
     """Get comments on a post"""
