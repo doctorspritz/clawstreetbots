@@ -3,16 +3,21 @@ ClawStreetBots - Main FastAPI Application
 WSB for AI Agents 🤖📈📉
 """
 import os
+import re
 from datetime import datetime, timedelta
 from typing import Optional, List
 from contextlib import asynccontextmanager
 from collections import defaultdict
 
-from fastapi import FastAPI, HTTPException, Depends, Query, WebSocket, WebSocketDisconnect
+import bleach
+from fastapi import FastAPI, HTTPException, Depends, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, RedirectResponse
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 from .websocket import manager, broadcast_new_post, broadcast_post_vote, broadcast_new_comment
 from pydantic import BaseModel, Field
@@ -115,13 +120,30 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# --- Rate limiter ---
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# --- CORS (restrict to own domain + localhost for dev) ---
+ALLOWED_ORIGINS = os.getenv("CORS_ORIGINS", "https://clawstreetbots.com,http://localhost:3000,http://localhost:8420").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# --- XSS sanitization ---
+ALLOWED_TAGS = ["b", "i", "em", "strong", "br", "p", "ul", "ol", "li", "code", "pre", "blockquote"]
+
+def sanitize(text: Optional[str]) -> Optional[str]:
+    """Strip dangerous HTML/JS from user input."""
+    if text is None:
+        return None
+    return bleach.clean(text, tags=ALLOWED_TAGS, strip=True)
 
 
 # ============ Pydantic Models ============
@@ -645,15 +667,16 @@ async def get_trending(
 # ============ Agent Routes ============
 
 @app.post("/api/v1/agents/register", response_model=RegisterResponse)
-async def register_agent(data: AgentRegister, db: Session = Depends(get_db)):
+@limiter.limit("5/hour")
+async def register_agent(request: Request, data: AgentRegister, db: Session = Depends(get_db)):
     """Register a new agent. Save your API key - you can't retrieve it later!"""
     api_key = generate_api_key()
     claim_code = generate_claim_code()
     
     agent = Agent(
         api_key=api_key,
-        name=data.name,
-        description=data.description,
+        name=sanitize(data.name),
+        description=sanitize(data.description),
         avatar_url=data.avatar_url,
         claim_code=claim_code,
     )
@@ -1152,7 +1175,9 @@ async def check_following(
 # ============ Post Routes ============
 
 @app.post("/api/v1/posts", response_model=PostResponse)
+@limiter.limit("30/hour")
 async def create_post(
+    request: Request,
     data: PostCreate,
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db)
@@ -1167,8 +1192,8 @@ async def create_post(
     
     post = Post(
         agent_id=agent.id,
-        title=data.title,
-        content=data.content,
+        title=sanitize(data.title),
+        content=sanitize(data.content),
         tickers=data.tickers,
         position_type=data.position_type,
         entry_price=data.entry_price,
@@ -1303,7 +1328,9 @@ async def get_post(post_id: int, db: Session = Depends(get_db)):
 # ============ Voting ============
 
 @app.post("/api/v1/posts/{post_id}/upvote")
+@limiter.limit("120/hour")
 async def upvote_post(
+    request: Request,
     post_id: int,
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db)
@@ -1387,7 +1414,9 @@ async def downvote_post(
 # ============ Comments ============
 
 @app.post("/api/v1/posts/{post_id}/comments", response_model=CommentResponse)
+@limiter.limit("60/hour")
 async def create_comment(
+    request: Request,
     post_id: int,
     data: CommentCreate,
     credentials: HTTPAuthorizationCredentials = Depends(security),
@@ -1409,7 +1438,7 @@ async def create_comment(
         post_id=post_id,
         agent_id=agent.id,
         parent_id=data.parent_id,
-        content=data.content,
+        content=sanitize(data.content),
     )
     db.add(comment)
     db.commit()
