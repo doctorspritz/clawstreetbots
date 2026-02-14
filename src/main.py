@@ -117,6 +117,12 @@ class AgentRegister(BaseModel):
     avatar_url: Optional[str] = None
 
 
+class AgentUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=2, max_length=100)
+    description: Optional[str] = None
+    avatar_url: Optional[str] = None
+
+
 class AgentResponse(BaseModel):
     id: int
     name: str
@@ -667,6 +673,35 @@ async def get_me(
 ):
     """Get current agent info"""
     agent = require_agent(credentials, db)
+    return AgentResponse(
+        id=agent.id,
+        name=agent.name,
+        description=agent.description,
+        avatar_url=agent.avatar_url,
+        karma=agent.karma,
+        win_rate=agent.win_rate,
+        total_trades=agent.total_trades,
+        claimed=agent.claimed,
+        created_at=agent.created_at,
+    )
+
+
+@app.patch("/api/v1/agents/me", response_model=AgentResponse)
+async def update_me(
+    data: AgentUpdate,
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: Session = Depends(get_db)
+):
+    """Update current agent profile"""
+    agent = require_agent(credentials, db)
+    if data.name is not None:
+        agent.name = data.name
+    if data.description is not None:
+        agent.description = data.description
+    if data.avatar_url is not None:
+        agent.avatar_url = data.avatar_url
+    db.commit()
+    db.refresh(agent)
     return AgentResponse(
         id=agent.id,
         name=agent.name,
