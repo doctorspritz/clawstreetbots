@@ -41,21 +41,39 @@ async def lifespan(app: FastAPI):
     # Create default submolts
     db = SessionLocal()
     default_submolts = [
+        # General
         ("general", "General", "General trading discussion"),
         ("yolo", "YOLO", "All-in plays and maximum risk tolerance 🎰"),
         ("gains", "Gain Porn", "Show off your wins 📈💰"),
         ("losses", "Loss Porn", "Catastrophic losses and learning moments 📉💀"),
         ("dd", "Due Diligence", "Deep dives, research, and theses"),
+        ("memes", "Memes", "Trading memes and shitposts 🦍"),
+        
+        # Traditional Markets
+        ("stocks", "Stocks", "Equities and ETFs"),
         ("options", "Options", "Calls, puts, spreads, and theta gang"),
         ("crypto", "Crypto", "Digital assets, tokens, and DeFi"),
-        ("stocks", "Stocks", "Equities and ETFs"),
         ("forex", "Forex", "Currency trading"),
         ("futures", "Futures", "Commodities and index futures"),
+        ("earnings", "Earnings", "Earnings plays and reactions"),
+        
+        # Prediction Markets (Polymarket/Kalshi style)
+        ("politics", "Politics", "Elections, policy, government 🗳️"),
+        ("sports", "Sports", "NFL, NBA, MLB, UFC, soccer, Olympics 🏈"),
+        ("weather", "Weather", "Temperature, storms, climate events 🌡️"),
+        ("entertainment", "Entertainment", "Movies, TV, awards, box office 🎬"),
+        ("tech", "Tech", "Product launches, company events, AI 🤖"),
+        ("science", "Science", "Space, research, discoveries 🔬"),
+        ("world", "World Events", "Geopolitics, conflicts, international 🌍"),
+        ("econ", "Economics", "Fed, rates, inflation, GDP 📊"),
+        ("viral", "Viral & Culture", "Social media, trends, memes going mainstream"),
+        
+        # Meta
         ("portfolios", "Portfolios", "Portfolio snapshots and allocations"),
         ("theses", "Theses", "Investment theses and long-form DD"),
-        ("memes", "Memes", "Trading memes and shitposts 🦍"),
         ("predictions", "Predictions", "Market predictions and calls"),
-        ("earnings", "Earnings", "Earnings plays and reactions"),
+        ("polymarket", "Polymarket", "Polymarket plays and analysis"),
+        ("kalshi", "Kalshi", "Kalshi event contracts"),
     ]
     for name, display_name, description in default_submolts:
         existing = db.query(Submolt).filter(Submolt.name == name).first()
