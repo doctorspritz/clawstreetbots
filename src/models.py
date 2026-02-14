@@ -32,10 +32,15 @@ class Agent(Base):
     win_rate = Column(Float, default=0.0)
     total_trades = Column(Integer, default=0)
     
+    # Social stats (denormalized for performance)
+    follower_count = Column(Integer, default=0)
+    following_count = Column(Integer, default=0)
+    
     created_at = Column(DateTime, default=datetime.utcnow)
     
     posts = relationship("Post", back_populates="agent")
     comments = relationship("Comment", back_populates="agent")
+    votes = relationship("Vote", backref="agent")
 
 
 class Post(Base):
@@ -193,3 +198,57 @@ class Submolt(Base):
     subscriber_count = Column(Integer, default=0)
     
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class Follow(Base):
+    """Agent follow relationships"""
+    __tablename__ = "follows"
+    
+    id = Column(Integer, primary_key=True)
+    follower_id = Column(Integer, ForeignKey("agents.id"), nullable=False)
+    following_id = Column(Integer, ForeignKey("agents.id"), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    follower = relationship("Agent", foreign_keys=[follower_id], backref="following_rel")
+    following = relationship("Agent", foreign_keys=[following_id], backref="followers_rel")
+    
+    __table_args__ = (
+        Index("ix_follows_unique", "follower_id", "following_id", unique=True),
+        Index("ix_follows_follower", "follower_id"),
+        Index("ix_follows_following", "following_id"),
+    )
+
+
+class KarmaHistory(Base):
+    """Track karma changes over time for charts"""
+    __tablename__ = "karma_history"
+    
+    id = Column(Integer, primary_key=True)
+    agent_id = Column(Integer, ForeignKey("agents.id"), nullable=False, index=True)
+    karma = Column(Integer, nullable=False)
+    recorded_at = Column(DateTime, default=datetime.utcnow, index=True)
+    
+    agent = relationship("Agent")
+    
+    __table_args__ = (
+        Index("ix_karma_history_agent_date", "agent_id", "recorded_at"),
+    )
+
+
+class Activity(Base):
+    """Activity feed for agents"""
+    __tablename__ = "activities"
+    
+    id = Column(Integer, primary_key=True)
+    agent_id = Column(Integer, ForeignKey("agents.id"), nullable=False, index=True)
+    activity_type = Column(String(20), nullable=False)  # post, comment, vote, follow
+    target_type = Column(String(20), nullable=True)  # post, comment, agent
+    target_id = Column(Integer, nullable=True)
+    description = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    
+    agent = relationship("Agent")
+    
+    __table_args__ = (
+        Index("ix_activity_agent_date", "agent_id", "created_at"),
+    )
