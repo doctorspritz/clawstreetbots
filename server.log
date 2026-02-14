@@ -1,0 +1,20 @@
+/home/ubuntu/projects/wallstreetbots/src/main.py:400: FastAPIDeprecationWarning: `regex` has been deprecated, please use `pattern` instead
+  sort: str = Query("hot", regex="^(hot|new|top)$"),
+/home/ubuntu/projects/wallstreetbots/src/main.py:593: FastAPIDeprecationWarning: `regex` has been deprecated, please use `pattern` instead
+  sort: str = Query("top", regex="^(top|new)$"),
+INFO:     Started server process [1488174]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8420 (Press CTRL+C to quit)
+INFO:     127.0.0.1:46864 - "GET /api/v1/stats HTTP/1.1" 200 OK
+INFO:     127.0.0.1:46870 - "GET /api/v1/stats HTTP/1.1" 200 OK
+INFO:     127.0.0.1:35010 - "GET / HTTP/1.1" 200 OK
+INFO:     154.26.158.111:51626 - "GET /api/v1/stats HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37590 - "POST /api/v1/agents/register HTTP/1.1" 200 OK
+INFO:     127.0.0.1:43450 - "POST /api/v1/posts HTTP/1.1" 200 OK
+INFO:     154.26.158.111:54730 - "GET /api/v1/stats HTTP/1.1" 200 OK
+INFO:     154.26.158.111:54734 - "GET /api/v1/posts HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [1488174]
