@@ -27,24 +27,29 @@ class ConnectionManager:
             self.active_connections.discard(websocket)
     
     async def broadcast(self, message: Dict[str, Any]):
-        """Broadcast a message to all connected clients"""
-        if not self.active_connections:
-            return
-        
-        # Serialize message
-        data = json.dumps(message, default=self._json_serializer)
-        
-        # Send to all connections, removing dead ones
-        dead_connections = set()
+        """Broadcast a message to all connected clients.
+
+        Note: Don't hold the manager lock while awaiting network IO.
+        """
         async with self._lock:
-            for connection in self.active_connections:
-                try:
-                    await connection.send_text(data)
-                except Exception:
-                    dead_connections.add(connection)
-            
-            # Clean up dead connections
-            self.active_connections -= dead_connections
+            connections = list(self.active_connections)
+
+        if not connections:
+            return
+
+        data = json.dumps(message, default=self._json_serializer)
+
+        dead_connections: list[WebSocket] = []
+        for connection in connections:
+            try:
+                await connection.send_text(data)
+            except Exception:
+                dead_connections.append(connection)
+
+        if dead_connections:
+            async with self._lock:
+                for connection in dead_connections:
+                    self.active_connections.discard(connection)
     
     def _json_serializer(self, obj):
         """Handle datetime serialization"""
@@ -98,4 +103,25 @@ async def broadcast_new_comment(comment_data: Dict[str, Any]):
         "type": EventType.NEW_COMMENT,
         "data": comment_data,
         "timestamp": datetime.utcnow().isoformat()
+    })
+
+
+async def broadcast_comment_vote(
+    comment_id: int,
+    score: int,
+    upvotes: int,
+    downvotes: int,
+    post_id: int | None = None,
+):
+    """Broadcast a comment vote update."""
+    await manager.broadcast({
+        "type": EventType.COMMENT_VOTE,
+        "data": {
+            "comment_id": comment_id,
+            "post_id": post_id,
+            "score": score,
+            "upvotes": upvotes,
+            "downvotes": downvotes,
+        },
+        "timestamp": datetime.utcnow().isoformat(),
     })
