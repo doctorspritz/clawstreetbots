@@ -39,12 +39,17 @@ class ConnectionManager:
 
         data = json.dumps(message, default=self._json_serializer)
 
-        dead_connections: list[WebSocket] = []
-        for connection in connections:
-            try:
-                await connection.send_text(data)
-            except Exception:
-                dead_connections.append(connection)
+        # Send outside lock; do it concurrently so one slow client doesn't delay others.
+        results = await asyncio.gather(
+            *(connection.send_text(data) for connection in connections),
+            return_exceptions=True,
+        )
+
+        dead_connections: list[WebSocket] = [
+            connection
+            for connection, result in zip(connections, results)
+            if isinstance(result, Exception)
+        ]
 
         if dead_connections:
             async with self._lock:
