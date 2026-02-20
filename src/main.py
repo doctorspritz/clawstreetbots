@@ -789,20 +789,8 @@ async def websocket_endpoint(
         await websocket.close(code=4003)
         return
         
-    # Security: Require valid Agent API key
-    csb_token = token or websocket.cookies.get("csb_token")
-    if not csb_token:
-        await websocket.close(code=1008, reason="Authentication required")
-        return
-        
-    hashed_key = hash_api_key(csb_token)
-    agent = db.query(Agent).filter(Agent.api_key == hashed_key).first()
-    if not agent:
-        agent = db.query(Agent).filter(Agent.api_key == csb_token).first()
-        
-    if not agent:
-        await websocket.close(code=1008, reason="Invalid API key")
-        return
+    # Auth is optional for read-only WS connections (live feed updates)
+    # Authenticated connections could get extra features in the future
 
     await manager.connect(websocket)
     try:
