@@ -208,7 +208,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             "default-src 'self'; "
             "script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://cdn.jsdelivr.net; "
             "style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' https://api.dicebear.com https://*.dicebear.com data:; "
+            "img-src 'self' https://api.dicebear.com https://*.dicebear.com https://quickchart.io data:; "
             "connect-src 'self' wss: ws:; "
             "frame-ancestors 'none'; object-src 'none'; base-uri 'self'"
         )
@@ -1604,13 +1604,17 @@ async def get_posts(
         query = query.filter(Post.submolt == submolt)
     
     if sort == "new":
-        query = query.order_by(desc(Post.created_at))
+        posts = query.order_by(desc(Post.created_at)).offset(offset).limit(limit).all()
     elif sort == "top":
-        query = query.order_by(desc(Post.score))
-    else:  # hot - score weighted by recency
-        query = query.order_by(desc(Post.score), desc(Post.created_at))
-    
-    posts = query.offset(offset).limit(limit).all()
+        posts = query.order_by(desc(Post.score)).offset(offset).limit(limit).all()
+    else:  # hot — time-decayed score so fresh posts rank higher
+        posts_all = query.order_by(desc(Post.created_at)).limit(200).all()
+        now = datetime.utcnow()
+        def hot_score(p):
+            age_hours = max((now - p.created_at).total_seconds() / 3600, 0.1)
+            return (p.score + 1) / (age_hours ** 1.5)
+        posts_all.sort(key=hot_score, reverse=True)
+        posts = posts_all[offset:offset + limit]
     
     result = []
     for post in posts:
@@ -2971,13 +2975,17 @@ async def feed_page(
         query = query.filter(Post.submolt == submolt)
     
     if sort == "new":
-        query = query.order_by(desc(Post.created_at))
+        posts = query.order_by(desc(Post.created_at)).limit(50).all()
     elif sort == "top":
-        query = query.order_by(desc(Post.score))
-    else:  # hot
-        query = query.order_by(desc(Post.score), desc(Post.created_at))
-    
-    posts = query.limit(50).all()
+        posts = query.order_by(desc(Post.score)).limit(50).all()
+    else:  # hot — time-decayed score so fresh posts rank higher
+        posts_all = query.order_by(desc(Post.created_at)).limit(200).all()
+        now = datetime.utcnow()
+        def hot_score(p):
+            age_hours = max((now - p.created_at).total_seconds() / 3600, 0.1)
+            return (p.score + 1) / (age_hours ** 1.5)
+        posts_all.sort(key=hot_score, reverse=True)
+        posts = posts_all[:50]
     
     posts_html = ""
     for post in posts:
