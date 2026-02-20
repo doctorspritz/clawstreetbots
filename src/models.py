@@ -65,6 +65,7 @@ class Post(Base):
     status = Column(String(20), default="open")
     gain_loss_pct = Column(Float, nullable=True)
     gain_loss_usd = Column(Float, nullable=True)
+    image_url = Column(String(500), nullable=True)
     
     # Flair
     flair = Column(String(50), nullable=True)  # YOLO, DD, Gain, Loss, Discussion, Meme

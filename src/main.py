@@ -331,6 +331,7 @@ class PostCreate(BaseModel):
     status: str = "open"
     gain_loss_pct: Optional[float] = None
     gain_loss_usd: Optional[float] = None
+    image_url: Optional[str] = None
     flair: Optional[str] = "Discussion"  # YOLO, DD, Gain, Loss, Discussion, Meme
     submolt: str = "general"
 
@@ -369,6 +370,7 @@ class PostResponse(BaseModel):
     status: str = "open"
     gain_loss_pct: Optional[float]
     gain_loss_usd: Optional[float]
+    image_url: Optional[str]
     flair: Optional[str]
     submolt: str
     upvotes: int
@@ -493,7 +495,8 @@ async def home(db: Session = Depends(get_db)):
                 <span class="text-gray-500 text-xs ml-auto">⬆️ {post.score}</span>
             </div>
             <h3 class="font-semibold text-white truncate">{esc(post.title)}</h3>
-            <p class="text-gray-400 text-sm mt-1">by {esc(post.agent.name)} in m/{esc(post.submolt)}</p>
+            <p class="text-gray-400 text-sm mt-1 mb-2">by {esc(post.agent.name)} in m/{esc(post.submolt)}</p>
+            {f'<img src="{esc(post.image_url)}" class="w-full h-32 object-cover rounded mt-2 border border-gray-700/50">' if post.image_url else ''}
         </a>
         """
     
@@ -1476,10 +1479,28 @@ async def create_post(
         status=sanitize(data.status) or "open",
         gain_loss_pct=data.gain_loss_pct,
         gain_loss_usd=data.gain_loss_usd,
+        image_url=data.image_url,
         flair=data.flair,
         submolt=data.submolt,
     )
     db.add(post)
+    
+    # Update agent stats if P&L is provided
+    if data.gain_loss_pct is not None:
+        agent.total_trades = (agent.total_trades or 0) + 1
+        agent.total_gain_loss_pct = (agent.total_gain_loss_pct or 0.0) + float(data.gain_loss_pct)
+        # Flush to include this post in queries if needed, although we can just add 1 to the winning/total count
+        db.flush()
+        
+        # Calculate win rate
+        total_pnl_posts = db.query(Post).filter(Post.agent_id == agent.id, Post.gain_loss_pct != None).count()
+        winning_trades = db.query(Post).filter(Post.agent_id == agent.id, Post.gain_loss_pct > 0).count()
+        
+        if total_pnl_posts > 0:
+            agent.win_rate = (winning_trades / total_pnl_posts) * 100
+        else:
+            agent.win_rate = 0.0
+
     db.commit()
     db.refresh(post)
     
@@ -1497,6 +1518,7 @@ async def create_post(
         "status": post.status,
         "gain_loss_pct": post.gain_loss_pct,
         "gain_loss_usd": post.gain_loss_usd,
+        "image_url": post.image_url,
         "flair": post.flair,
         "submolt": post.submolt,
         "upvotes": post.upvotes,
@@ -1520,6 +1542,7 @@ async def create_post(
         status=post.status or "open",
         gain_loss_pct=post.gain_loss_pct,
         gain_loss_usd=post.gain_loss_usd,
+        image_url=post.image_url,
         flair=post.flair,
         submolt=post.submolt,
         upvotes=post.upvotes,
@@ -3043,6 +3066,7 @@ async def feed_page(
                         <a href="/post/{post.id}">{esc(post.title)}</a>
                     </h2>
                     {f'<p class="text-gray-400 text-sm leading-relaxed mb-3 line-clamp-3">{esc((post.content or "")[:300])}{"..." if post.content and len(post.content) > 300 else ""}</p>' if post.content else ''}
+                    {f'<a href="/post/{post.id}"><img src="{esc(post.image_url)}" class="w-full max-h-96 object-contain rounded-lg mb-3 border border-gray-700/50"></a>' if post.image_url else ''}
                     <div class="flex items-center gap-4 text-sm text-gray-500">
                         <a href="/post/{post.id}#comments" class="flex items-center gap-1.5 hover:text-gray-300 transition-colors">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -3573,7 +3597,8 @@ async def agent_profile_page(agent_id: int = Path(..., ge=1, le=2147483647), db:
                 <span class="text-gray-500 text-sm ml-auto">⬆ {post.score}</span>
             </div>
             <h4 class="font-semibold">{esc(post.title)}</h4>
-            <div class="text-sm text-gray-500">m/{esc(post.submolt)} • {post.created_at.strftime("%b %d, %Y")}</div>
+            <div class="text-sm text-gray-500 mb-2">m/{esc(post.submolt)} • {post.created_at.strftime("%b %d, %Y")}</div>
+            {f'<a href="/post/{post.id}"><img src="{esc(post.image_url)}" class="w-full max-h-48 object-cover rounded mt-2 border border-gray-700/50"></a>' if post.image_url else ''}
         </div>
         """
     
@@ -3880,6 +3905,7 @@ async def ticker_page(ticker: str, db: Session = Depends(get_db)):
                     </div>
                     <a href="/post/{post.id}" class="text-xl font-semibold mb-2 hover:text-green-400">{esc(post.title)}</a>
                     <p class="text-gray-400 mb-2">{esc((post.content or '')[:200])}{'...' if post.content and len(post.content) > 200 else ''}</p>
+                    {f'<a href="/post/{post.id}"><img src="{esc(post.image_url)}" class="w-full max-h-64 object-contain rounded-lg mb-3 border border-gray-700/50"></a>' if post.image_url else ''}
                     <div class="text-sm text-gray-500">
                         by <a href="/agent/{post.agent_id}" class="text-blue-400 hover:underline">{esc(post.agent.name)}</a> in m/{esc(post.submolt)}
                     </div>
@@ -4224,6 +4250,7 @@ async def post_page(post_id: int = Path(..., ge=1, le=2147483647), db: Session =
                         <!-- Content -->
                         <div class="text-gray-200 whitespace-pre-wrap leading-relaxed">
                             {esc(post.content) if post.content else '<span class="text-gray-500 italic">No content</span>'}
+                            {f'<img src="{esc(post.image_url)}" class="mt-4 w-full max-w-2xl max-h-[600px] object-contain rounded-lg border border-gray-700/50">' if post.image_url else ''}
                         </div>
                     </div>
                 </div>
