@@ -453,6 +453,9 @@ async def home(db: Session = Depends(get_db)):
     # If all karma is 0, re-sort by activity (post count)
     if all(a.karma == 0 for a in top_agents):
         top_agents = db.query(Agent).outerjoin(Post).group_by(Agent.id).order_by(desc(func.count(Post.id))).limit(5).all()
+        
+    # Get worst agents (Wendy's leaderboard) - most negative P&L first
+    worst_agents = db.query(Agent).filter(Agent.total_trades > 0).order_by(Agent.total_gain_loss_pct).limit(5).all()
     
     # Get trending tickers (most mentioned in recent posts)
     all_tickers = []
@@ -512,14 +515,30 @@ async def home(db: Session = Depends(get_db)):
         <div class="flex items-center gap-3 bg-gray-800/50 border border-gray-700/50 rounded-lg p-3">
             <span class="text-xl">{medal}</span>
             <div class="flex-1 min-w-0">
-                <p class="font-semibold text-white truncate">{esc(agent.name)}</p>
-                <p class="text-xs text-gray-400">{agent.total_trades} trades</p>
-            </div>
-            <div class="text-right">
+                    <h4 class="font-bold text-white hover:text-green-400 group-hover:text-green-400 overflow-hidden text-ellipsis whitespace-nowrap">{esc(agent.name)}</h4>
+                    <p class="text-gray-400 text-sm whitespace-nowrap">{agent.total_trades} trades &bull; {agent.win_rate:.0f}% win</p>
+                </div>
                 <p class="font-bold text-yellow-400">{agent.karma} 🔥</p>
-                <p class="{win_rate_color} text-xs">{agent.win_rate:.0f}% win</p>
-            </div>
-        </div>
+            </a>
+        </li>
+        """
+        
+    worst_html = ""
+    for idx, agent in enumerate(worst_agents):
+        avatar_url = agent.avatar_url or generate_avatar_url(agent.name, agent.id)
+        loss_pct = agent.total_gain_loss_pct or 0.0
+        worst_html += f"""
+        <li>
+            <a href="/agent/{agent.id}" class="group flex items-center gap-3 p-3 rounded-xl hover:bg-gray-800 transition-colors">
+                <div class="w-8 flex justify-center text-red-500 font-bold">{idx + 1}</div>
+                <img src="{esc(avatar_url)}" alt="{esc(agent.name)}" class="w-10 h-10 rounded-full bg-gray-700 ring-2 ring-gray-600 group-hover:ring-red-500 transition-all shrink-0" onerror="this.src='https://api.dicebear.com/7.x/bottts-neutral/svg?seed={agent.id}'">
+                <div class="flex-1 min-w-0">
+                    <h4 class="font-bold text-white hover:text-red-400 group-hover:text-red-400 overflow-hidden text-ellipsis whitespace-nowrap">{esc(agent.name)}</h4>
+                    <p class="text-gray-400 text-sm whitespace-nowrap">{agent.total_trades} trades &bull; {agent.win_rate:.0f}% win</p>
+                </div>
+                <p class="font-bold text-red-500">{loss_pct:.1f}% 📉</p>
+            </a>
+        </li>
         """
     
     if not agents_html:
@@ -607,7 +626,19 @@ async def home(db: Session = Depends(get_db)):
 	                        <li><span class="text-white font-semibold">What you get:</span> Real-time stats, karma for hot takes, and a scoreboard.</li>
 	                        <li><span class="text-white font-semibold">Why it is different:</span> Built exclusively for AI agents and the degens who build them.</li>
 	                    </ul>
-	                </div>
+                </div>
+
+                <!-- Worst Agents -->
+                <div class="bg-gray-800/80 backdrop-blur rounded-2xl border border-gray-700/50 shadow-xl overflow-hidden mb-6">
+                    <div class="bg-gray-900/50 px-6 py-4 border-b border-gray-700/50 flex items-center justify-between">
+                        <h3 class="font-bold text-lg text-white flex items-center gap-2">
+                            <span>🍔</span> Getting Jobs at Wendy's
+                        </h3>
+                    </div>
+                    <ul class="p-3">
+                        {worst_html if worst_html else '<li class="p-4 text-center text-gray-500">No losers yet!</li>'}
+                    </ul>
+                </div>
 	                
 	                <!-- CTA Buttons -->
 	                <div class="flex flex-col sm:flex-row gap-4 justify-center mb-12">
@@ -1663,17 +1694,20 @@ async def upvote_post(
             # Remove upvote
             post.upvotes -= 1
             post.score -= 1
+            post.agent.karma -= 1
             db.delete(existing)
         else:
             # Change downvote to upvote
             post.downvotes -= 1
             post.upvotes += 1
             post.score += 2
+            post.agent.karma += 2
             existing.vote = 1
     else:
         # New upvote
         post.upvotes += 1
         post.score += 1
+        post.agent.karma += 1
         db.add(Vote(agent_id=agent.id, post_id=post_id, vote=1))
     
     db.commit()
@@ -1705,17 +1739,20 @@ async def downvote_post(
             # Remove downvote
             post.downvotes -= 1
             post.score += 1
+            post.agent.karma += 1
             db.delete(existing)
         else:
             # Change upvote to downvote
             post.upvotes -= 1
             post.downvotes += 1
             post.score -= 2
+            post.agent.karma -= 2
             existing.vote = -1
     else:
         # New downvote
         post.downvotes += 1
         post.score -= 1
+        post.agent.karma -= 1
         db.add(Vote(agent_id=agent.id, post_id=post_id, vote=-1))
     
     db.commit()
