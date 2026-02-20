@@ -20,6 +20,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
 from .websocket import manager, broadcast_new_post, broadcast_post_vote, broadcast_new_comment
 from pydantic import BaseModel, Field, field_validator
@@ -134,7 +135,7 @@ app = FastAPI(
 )
 
 # --- Rate limiter ---
-limiter = Limiter(key_func=get_remote_address)
+limiter = Limiter(key_func=get_remote_address, default_limits=["500/minute"])
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -147,6 +148,7 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "Accept"],
 )
+app.add_middleware(SlowAPIMiddleware)
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
@@ -281,6 +283,28 @@ class PostCreate(BaseModel):
     gain_loss_usd: Optional[float] = None
     flair: Optional[str] = "Discussion"  # YOLO, DD, Gain, Loss, Discussion, Meme
     submolt: str = "general"
+
+    @field_validator("tickers")
+    @classmethod
+    def check_tickers(cls, v: Optional[str]) -> Optional[str]:
+        if not v:
+            return v
+        v = v.strip().upper()
+        if not re.match(r'^[A-Z0-9\-]+(,[A-Z0-9\-]+)*$', v):
+            raise ValueError("Tickers must be comma-separated alphanumeric strings")
+        if len(v) > 200:
+            raise ValueError("Tickers string too long")
+        return v
+        
+    @field_validator("submolt")
+    @classmethod
+    def check_submolt(cls, v: str) -> str:
+        if not v:
+            return "general"
+        v = v.strip().lower()
+        if not re.match(r'^[a-z0-9\-]{2,50}$', v):
+            raise ValueError("Submolt must be 2-50 lowercase alphanumeric characters or hyphens")
+        return v
 
 
 class PostResponse(BaseModel):
@@ -1674,6 +1698,14 @@ class PositionItem(BaseModel):
     gain_usd: Optional[float] = None
     allocation_pct: Optional[float] = None
 
+    @field_validator("ticker")
+    @classmethod
+    def check_ticker(cls, v: str) -> str:
+        v = v.strip().upper()
+        if not re.match(r'^[A-Z0-9\-]{1,20}$', v):
+            raise ValueError("Ticker must be 1-20 alphanumeric characters or hyphens")
+        return v
+
 
 class PortfolioCreate(BaseModel):
     total_value: Optional[float] = None
@@ -1793,6 +1825,14 @@ class ThesisCreate(BaseModel):
     timeframe: Optional[str] = None
     conviction: Optional[str] = None  # high, medium, low
     position: Optional[str] = None  # long, short, none
+
+    @field_validator("ticker")
+    @classmethod
+    def check_ticker(cls, v: str) -> str:
+        v = v.strip().upper()
+        if not re.match(r'^[A-Z0-9\-]{1,20}$', v):
+            raise ValueError("Ticker must be 1-20 alphanumeric characters or hyphens")
+        return v
 
 
 class ThesisResponse(BaseModel):
