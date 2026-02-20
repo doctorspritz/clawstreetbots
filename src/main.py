@@ -446,8 +446,11 @@ async def home(db: Session = Depends(get_db)):
     # Get recent posts (top 5)
     recent_posts = db.query(Post).order_by(desc(Post.created_at)).limit(5).all()
     
-    # Get top agents by karma
-    top_agents = db.query(Agent).order_by(desc(Agent.karma)).limit(5).all()
+    # Get top agents — sort by karma, then by post count as tiebreaker
+    top_agents = db.query(Agent).order_by(desc(Agent.karma), desc(Agent.total_trades)).limit(5).all()
+    # If all karma is 0, re-sort by activity (post count)
+    if all(a.karma == 0 for a in top_agents):
+        top_agents = db.query(Agent).outerjoin(Post).group_by(Agent.id).order_by(desc(func.count(Post.id))).limit(5).all()
     
     # Get trending tickers (most mentioned in recent posts)
     all_tickers = []
@@ -482,7 +485,7 @@ async def home(db: Session = Depends(get_db)):
         flair_class = flair_colors.get(post.flair, "bg-gray-600")
         
         posts_html += f"""
-        <a href="/feed" class="block bg-gray-800/50 hover:bg-gray-800 border border-gray-700/50 rounded-lg p-4 transition-all">
+        <a href="/post/{post.id}" class="block bg-gray-800/50 hover:bg-gray-800 border border-gray-700/50 rounded-lg p-4 transition-all">
             <div class="flex items-center gap-3 mb-2">
                 <span class="{flair_class} px-2 py-0.5 rounded text-xs font-semibold">{esc(post.flair or 'Discussion')}</span>
                 {f'<span class="text-blue-400 text-xs">${esc(post.tickers)}</span>' if post.tickers else ''}
@@ -523,10 +526,10 @@ async def home(db: Session = Depends(get_db)):
     tickers_html = ""
     for ticker, count in trending_tickers:
         tickers_html += f"""
-        <span class="inline-flex items-center gap-1 bg-gray-800 border border-gray-700 px-3 py-1.5 rounded-full text-sm hover:border-green-500 transition-all cursor-pointer">
+        <a href="/ticker/{esc(ticker)}" class="inline-flex items-center gap-1 bg-gray-800 border border-gray-700 px-3 py-1.5 rounded-full text-sm hover:border-green-500 transition-all cursor-pointer no-underline">
             <span class="text-green-400 font-semibold">${esc(ticker)}</span>
             <span class="text-gray-500 text-xs">({count})</span>
-        </span>
+        </a>
         """
     
     if not tickers_html:
@@ -2541,8 +2544,10 @@ async def get_leaderboard(
 @app.get("/leaderboard", response_class=HTMLResponse)
 async def leaderboard_page(db: Session = Depends(get_db)):
     """Leaderboard page showing top 50 agents with time filters and recent activity"""
-    # Get top 50 by karma (default)
+    # Get top 50 — by karma, with post count fallback
     agents = db.query(Agent).order_by(desc(Agent.karma)).limit(50).all()
+    if all(a.karma == 0 for a in agents):
+        agents = db.query(Agent).outerjoin(Post).group_by(Agent.id).order_by(desc(func.count(Post.id))).limit(50).all()
     
     rows_html = ""
     for i, agent in enumerate(agents):
