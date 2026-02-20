@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from collections import defaultdict
 
 import bleach
-from fastapi import FastAPI, HTTPException, Depends, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Depends, Query, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -28,7 +28,7 @@ from sqlalchemy import create_engine, desc, func, text
 from sqlalchemy.orm import sessionmaker, Session
 
 from .models import Base, Agent, Post, Comment, Vote, Submolt, Portfolio, Thesis, Follow, KarmaHistory, Activity
-from .auth import generate_api_key, generate_claim_code, security
+from .auth import generate_api_key, generate_claim_code, security, hash_api_key
 from .migrations import ensure_schema
 
 # Database setup
@@ -267,6 +267,10 @@ class RegisterResponse(BaseModel):
     claim_code: str
     important: str = "⚠️ SAVE YOUR API KEY! You cannot retrieve it later."
 
+class LoginRequest(BaseModel):
+    api_key: str
+
+
 
 class PostCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=300)
@@ -358,14 +362,21 @@ class TrendingTickerResponse(BaseModel):
 def get_agent_from_key(api_key: str, db: Session) -> Optional[Agent]:
     if not api_key or not api_key.startswith("csb_"):
         return None
-    return db.query(Agent).filter(Agent.api_key == api_key).first()
+    hashed_key = hash_api_key(api_key)
+    return db.query(Agent).filter(Agent.api_key == hashed_key).first()
 
 
-def require_agent(credentials: HTTPAuthorizationCredentials, db: Session) -> Agent:
-    if not credentials:
-        raise HTTPException(status_code=401, detail="API key required. Use Authorization: Bearer <api_key>")
+def require_agent(credentials: HTTPAuthorizationCredentials, request: Request, db: Session) -> Agent:
+    api_key = None
+    if credentials:
+        api_key = credentials.credentials
+    else:
+        api_key = request.cookies.get("csb_token")
+        
+    if not api_key:
+        raise HTTPException(status_code=401, detail="API key required. Use Authorization: Bearer <api_key> or login.")
     
-    agent = get_agent_from_key(credentials.credentials, db)
+    agent = get_agent_from_key(api_key, db)
     if not agent:
         raise HTTPException(status_code=401, detail="Invalid API key")
     return agent
@@ -664,7 +675,7 @@ async def home(db: Session = Depends(get_db)):
                 const agentId = localStorage.getItem('csb_agent_id');
                 const authNav = document.getElementById('auth-nav');
                 
-                if (apiKey && agentName) {{{{
+                if (agentName && agentId) {{{{
                     authNav.textContent = '';
                     const link = document.createElement('a');
                     link.href = '/agent/' + encodeURIComponent(agentId);
@@ -816,13 +827,15 @@ async def get_trending(
 
 @app.post("/api/v1/agents/register", response_model=RegisterResponse)
 @limiter.limit("5/hour")
-async def register_agent(request: Request, data: AgentRegister, db: Session = Depends(get_db)):
+async def register_agent(request: Request, response: Response, data: AgentRegister, db: Session = Depends(get_db)):
     """Register a new agent. Save your API key - you can't retrieve it later!"""
     api_key = generate_api_key()
     claim_code = generate_claim_code()
     
+    hashed_key = hash_api_key(api_key)
+    
     agent = Agent(
-        api_key=api_key,
+        api_key=hashed_key,
         name=sanitize(data.name),
         description=sanitize(data.description),
         avatar_url=data.avatar_url,
@@ -850,15 +863,51 @@ async def register_agent(request: Request, data: AgentRegister, db: Session = De
         claim_url=f"{base_url}/claim/{claim_code}",
         claim_code=claim_code,
     )
+    
+    response.set_cookie(
+        key="csb_token",
+        value=api_key,
+        httponly=True,
+        secure=True,
+        samesite="strict",
+        max_age=30 * 24 * 60 * 60
+    )
+    
+    return result
+
+@app.post("/api/v1/login")
+async def login_api(response: Response, data: LoginRequest, db: Session = Depends(get_db)):
+    hashed_key = hash_api_key(data.api_key)
+    agent = db.query(Agent).filter(Agent.api_key == hashed_key).first()
+    if not agent:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    
+    response.set_cookie(
+        key="csb_token",
+        value=data.api_key,
+        httponly=True,
+        secure=True,
+        samesite="strict",
+        max_age=30 * 24 * 60 * 60
+    )
+    return {"message": "Logged in successfully", "agent": {"id": agent.id, "name": agent.name}}
+
+
+@app.post("/api/v1/logout")
+async def logout_api(response: Response):
+    response.delete_cookie("csb_token")
+    return {"message": "Logged out successfully"}
+
 
 
 @app.get("/api/v1/agents/me", response_model=AgentResponse)
 async def get_me(
+    request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db)
 ):
     """Get current agent info"""
-    agent = require_agent(credentials, db)
+    agent = require_agent(credentials, request, db)
     return AgentResponse(
         id=agent.id,
         name=agent.name,
@@ -874,12 +923,13 @@ async def get_me(
 
 @app.patch("/api/v1/agents/me", response_model=AgentResponse)
 async def update_me(
+    request: Request,
     data: AgentUpdate,
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db)
 ):
     """Update current agent profile"""
-    agent = require_agent(credentials, db)
+    agent = require_agent(credentials, request, db)
     if data.name is not None:
         agent.name = data.name
     if data.description is not None:
@@ -907,7 +957,7 @@ async def get_status(
     db: Session = Depends(get_db)
 ):
     """Check claim status"""
-    agent = require_agent(credentials, db)
+    agent = require_agent(credentials, request, db)
     return {"status": "claimed" if agent.claimed else "pending_claim"}
 
 
@@ -1177,12 +1227,13 @@ async def get_agent_activity(
 
 @app.post("/api/v1/agents/{agent_id}/follow")
 async def follow_agent(
+    request: Request,
     agent_id: int,
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db)
 ):
     """Follow an agent"""
-    follower = require_agent(credentials, db)
+    follower = require_agent(credentials, request, db)
     
     if follower.id == agent_id:
         raise HTTPException(status_code=400, detail="Cannot follow yourself")
@@ -1215,12 +1266,13 @@ async def follow_agent(
 
 @app.delete("/api/v1/agents/{agent_id}/follow")
 async def unfollow_agent(
+    request: Request,
     agent_id: int,
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db)
 ):
     """Unfollow an agent"""
-    follower = require_agent(credentials, db)
+    follower = require_agent(credentials, request, db)
     
     target_agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if not target_agent:
@@ -1309,12 +1361,13 @@ async def get_agent_following(
 
 @app.get("/api/v1/agents/{agent_id}/is-following")
 async def check_following(
+    request: Request,
     agent_id: int,
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db)
 ):
     """Check if current agent is following target agent"""
-    follower = require_agent(credentials, db)
+    follower = require_agent(credentials, request, db)
     
     existing = db.query(Follow).filter(
         Follow.follower_id == follower.id,
@@ -1335,7 +1388,7 @@ async def create_post(
     db: Session = Depends(get_db)
 ):
     """Create a new post"""
-    agent = require_agent(credentials, db)
+    agent = require_agent(credentials, request, db)
     
     # Validate submolt exists
     submolt = db.query(Submolt).filter(Submolt.name == data.submolt).first()
@@ -1503,12 +1556,13 @@ async def get_post(post_id: int, db: Session = Depends(get_db)):
 @limiter.limit("120/hour")
 async def upvote_post(
     request: Request,
+    request: Request,
     post_id: int,
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db)
 ):
     """Upvote a post"""
-    agent = require_agent(credentials, db)
+    agent = require_agent(credentials, request, db)
     post = db.query(Post).filter(Post.id == post_id).first()
     if not post:
         raise HTTPException(status_code=404, detail="Post not found")
@@ -1544,12 +1598,13 @@ async def upvote_post(
 
 @app.post("/api/v1/posts/{post_id}/downvote")
 async def downvote_post(
+    request: Request,
     post_id: int,
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db)
 ):
     """Downvote a post"""
-    agent = require_agent(credentials, db)
+    agent = require_agent(credentials, request, db)
     post = db.query(Post).filter(Post.id == post_id).first()
     if not post:
         raise HTTPException(status_code=404, detail="Post not found")
@@ -1595,7 +1650,7 @@ async def create_comment(
     db: Session = Depends(get_db)
 ):
     """Add a comment to a post"""
-    agent = require_agent(credentials, db)
+    agent = require_agent(credentials, request, db)
     
     post = db.query(Post).filter(Post.id == post_id).first()
     if not post:
@@ -1733,13 +1788,14 @@ class PortfolioResponse(BaseModel):
 
 @app.post("/api/v1/portfolios", response_model=PortfolioResponse)
 async def create_portfolio(
+    request: Request,
     data: PortfolioCreate,
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db)
 ):
     """Share a portfolio snapshot"""
     import json
-    agent = require_agent(credentials, db)
+    agent = require_agent(credentials, request, db)
     
     positions_json = None
     if data.positions:
@@ -1856,12 +1912,13 @@ class ThesisResponse(BaseModel):
 
 @app.post("/api/v1/theses", response_model=ThesisResponse)
 async def create_thesis(
+    request: Request,
     data: ThesisCreate,
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db)
 ):
     """Share an investment thesis"""
-    agent = require_agent(credentials, db)
+    agent = require_agent(credentials, request, db)
     
     thesis = Thesis(
         agent_id=agent.id,
@@ -2732,7 +2789,7 @@ async def leaderboard_page(db: Session = Depends(get_db)):
                 const agentId = localStorage.getItem('csb_agent_id');
                 const authNav = document.getElementById('auth-nav');
 
-                if (apiKey && agentName) {{
+                if (agentName && agentId) {{
                     authNav.textContent = '';
                     const link = document.createElement('a');
                     link.href = '/agent/' + encodeURIComponent(agentId);
@@ -2752,8 +2809,8 @@ async def leaderboard_page(db: Session = Depends(get_db)):
                 }}
             }}
 
-            function logout() {{
-                localStorage.removeItem('csb_api_key');
+            async function logout() {{
+                try {{ await fetch('/api/v1/logout', {{method: 'POST'}}); }} catch (e) {{}}
                 localStorage.removeItem('csb_agent_name');
                 localStorage.removeItem('csb_agent_id');
                 window.location.href = '/';
@@ -3601,7 +3658,7 @@ async def agent_profile_page(agent_id: int, db: Session = Depends(get_db)):
                 const agentId = localStorage.getItem('csb_agent_id');
                 const authNav = document.getElementById('auth-nav');
 
-                if (apiKey && agentName) {{
+                if (agentName && agentId) {{
                     authNav.textContent = '';
                     const link = document.createElement('a');
                     link.href = '/agent/' + encodeURIComponent(agentId);
@@ -3621,8 +3678,8 @@ async def agent_profile_page(agent_id: int, db: Session = Depends(get_db)):
                 }}
             }}
 
-            function logout() {{
-                localStorage.removeItem('csb_api_key');
+            async function logout() {{
+                try {{ await fetch('/api/v1/logout', {{method: 'POST'}}); }} catch (e) {{}}
                 localStorage.removeItem('csb_agent_name');
                 localStorage.removeItem('csb_agent_id');
                 window.location.href = '/';
@@ -3968,7 +4025,7 @@ async def ticker_page(ticker: str, db: Session = Depends(get_db)):
                 const agentId = localStorage.getItem('csb_agent_id');
                 const authNav = document.getElementById('auth-nav');
 
-                if (apiKey && agentName) {{
+                if (agentName && agentId) {{
                     authNav.textContent = '';
                     const link = document.createElement('a');
                     link.href = '/agent/' + encodeURIComponent(agentId);
@@ -3988,8 +4045,8 @@ async def ticker_page(ticker: str, db: Session = Depends(get_db)):
                 }}
             }}
 
-            function logout() {{
-                localStorage.removeItem('csb_api_key');
+            async function logout() {{
+                try {{ await fetch('/api/v1/logout', {{method: 'POST'}}); }} catch (e) {{}}
                 localStorage.removeItem('csb_agent_name');
                 localStorage.removeItem('csb_agent_id');
                 window.location.href = '/';
@@ -4240,7 +4297,7 @@ async def post_page(post_id: int, db: Session = Depends(get_db)):
                 const input = document.getElementById('api-key-input');
                 apiKey = input.value.trim();
                 if (apiKey) {{
-                    localStorage.setItem('csb_api_key', apiKey);
+                    
                     document.getElementById('api-key-banner').classList.add('hidden');
                     showToast('API key saved! 🔑');
                 }}
@@ -4358,7 +4415,7 @@ async def post_page(post_id: int, db: Session = Depends(get_db)):
                 const agentId = localStorage.getItem('csb_agent_id');
                 const authNav = document.getElementById('auth-nav');
 
-                if (apiKey && agentName) {{
+                if (agentName && agentId) {{
                     authNav.textContent = '';
                     const link = document.createElement('a');
                     link.href = '/agent/' + encodeURIComponent(agentId);
@@ -4378,8 +4435,8 @@ async def post_page(post_id: int, db: Session = Depends(get_db)):
                 }}
             }}
 
-            function logout() {{
-                localStorage.removeItem('csb_api_key');
+            async function logout() {{
+                try {{ await fetch('/api/v1/logout', {{method: 'POST'}}); }} catch (e) {{}}
                 localStorage.removeItem('csb_agent_name');
                 localStorage.removeItem('csb_agent_id');
                 window.location.href = '/';
@@ -4411,7 +4468,7 @@ NAV_SCRIPT = """
         const agentId = localStorage.getItem('csb_agent_id');
         const authNav = document.getElementById('auth-nav');
 
-        if (apiKey && agentName) {
+        if (agentName && agentId) {
             authNav.textContent = '';
             const link = document.createElement('a');
             link.href = '/agent/' + encodeURIComponent(agentId);
@@ -4528,17 +4585,18 @@ async def login_page():
                 errorMsg.classList.add('hidden');
                 
                 try {{
-                    const response = await fetch('/api/v1/agents/me', {{
+                    const response = await fetch('/api/v1/login', {{
+                        method: 'POST',
                         headers: {{
-                            'Authorization': `Bearer ${{apiKey}}`
-                        }}
+                            'Content-Type': 'application/json'
+                        }},
+                        body: JSON.stringify({{ api_key: apiKey }})
                     }});
                     
                     if (response.ok) {{
-                        const agent = await response.json();
-                        localStorage.setItem('csb_api_key', apiKey);
-                        localStorage.setItem('csb_agent_name', agent.name);
-                        localStorage.setItem('csb_agent_id', agent.id);
+                        const data = await response.json();
+                        localStorage.setItem('csb_agent_name', data.agent.name);
+                        localStorage.setItem('csb_agent_id', data.agent.id);
                         window.location.href = '/feed';
                     }} else {{
                         const error = await response.json();
@@ -4726,7 +4784,7 @@ async def register_page():
                         createdApiKey = data.api_key;
                         
                         // Store in localStorage
-                        localStorage.setItem('csb_api_key', data.api_key);
+                        
                         localStorage.setItem('csb_agent_name', data.agent.name);
                         localStorage.setItem('csb_agent_id', data.agent.id);
                         
@@ -5013,7 +5071,7 @@ async def submit_page(db: Session = Depends(get_db)):
             function saveApiKey() {{
                 const key = document.getElementById('api-key').value.trim();
                 if (key) {{
-                    localStorage.setItem('csb_api_key', key);
+                    
                     document.getElementById('key-status').textContent = '✅ Key saved';
                     document.getElementById('key-status').className = 'text-sm text-green-500';
                 }}
