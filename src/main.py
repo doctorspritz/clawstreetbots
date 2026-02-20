@@ -11,11 +11,11 @@ from contextlib import asynccontextmanager
 from collections import defaultdict
 
 import bleach
-from fastapi import FastAPI, HTTPException, Depends, Query, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Depends, Query, Request, Response, WebSocket, WebSocketDisconnect, Path
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -138,6 +138,52 @@ app = FastAPI(
 limiter = Limiter(key_func=get_remote_address, default_limits=["500/minute"])
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+import traceback
+import logging
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from fastapi.exception_handlers import http_exception_handler, request_validation_exception_handler
+
+logger = logging.getLogger("clawstreetbots")
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    if isinstance(exc, StarletteHTTPException):
+        return await http_exception_handler(request, exc)
+    if isinstance(exc, RequestValidationError):
+        return await request_validation_exception_handler(request, exc)
+
+    logger.error(f"Unhandled exception: {exc}")
+    logger.error(traceback.format_exc())
+    
+    if request.url.path.startswith("/api/"):
+        return JSONResponse(
+            status_code=500,
+            content={"detail": "Internal server error"}
+        )
+    return HTMLResponse(
+        status_code=500,
+        content='''
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Internal Server Error - ClawStreetBots</title>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <script src="https://cdn.tailwindcss.com"></script>
+        </head>
+        <body class="bg-gray-900 text-white min-h-screen flex items-center justify-center">
+            <div class="text-center">
+                <h1 class="text-6xl mb-4">💥📉</h1>
+                <h2 class="text-2xl font-bold mb-2">Internal Server Error</h2>
+                <p class="text-gray-400 mb-4">Bots encountered an unexpected issue.</p>
+                <a href="/feed" class="text-green-500 hover:underline">← Back to Feed</a>
+            </div>
+        </body>
+        </html>
+        '''
+    )
 
 # --- CORS (restrict to own domain + localhost for dev) ---
 ALLOWED_ORIGINS = os.getenv("CORS_ORIGINS", "https://clawstreetbots.com,http://localhost:3000,http://localhost:8420").split(",")
@@ -847,7 +893,7 @@ async def register_agent(request: Request, response: Response, data: AgentRegist
     
     base_url = os.getenv("BASE_URL", "https://csb.openclaw.ai")
     
-    return RegisterResponse(
+    result = RegisterResponse(
         agent=AgentResponse(
             id=agent.id,
             name=agent.name,
@@ -864,6 +910,9 @@ async def register_agent(request: Request, response: Response, data: AgentRegist
         claim_code=claim_code,
     )
     
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+
     response.set_cookie(
         key="csb_token",
         value=api_key,
@@ -873,7 +922,22 @@ async def register_agent(request: Request, response: Response, data: AgentRegist
         max_age=30 * 24 * 60 * 60
     )
     
-    return result
+    import json
+    # Use FastAPI's jsonable_encoder to format the pydantic response
+    from fastapi.encoders import jsonable_encoder
+    
+    resp = JSONResponse(content=jsonable_encoder(result))
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    resp.set_cookie(
+        key="csb_token",
+        value=api_key,
+        httponly=True,
+        secure=True,
+        samesite="strict",
+        max_age=30 * 24 * 60 * 60
+    )
+    return resp
 
 @app.post("/api/v1/login")
 async def login_api(response: Response, data: LoginRequest, db: Session = Depends(get_db)):
@@ -962,7 +1026,7 @@ async def get_status(
 
 
 @app.get("/api/v1/agents/{agent_id}", response_model=AgentResponse)
-async def get_agent(agent_id: int, db: Session = Depends(get_db)):
+async def get_agent(agent_id: int = Path(..., ge=1, le=2147483647), db: Session = Depends(get_db)):
     """Get agent by ID"""
     agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if not agent:
@@ -1016,7 +1080,7 @@ class FollowResponse(BaseModel):
 
 
 @app.get("/api/v1/agents/{agent_id}/stats", response_model=AgentStatsResponse)
-async def get_agent_stats(agent_id: int, db: Session = Depends(get_db)):
+async def get_agent_stats(agent_id: int = Path(..., ge=1, le=2147483647), db: Session = Depends(get_db)):
     """Get detailed stats for an agent including karma history and P&L over time"""
     agent = db.query(Agent).filter(Agent.id == agent_id).first()
     if not agent:
@@ -1228,7 +1292,7 @@ async def get_agent_activity(
 @app.post("/api/v1/agents/{agent_id}/follow")
 async def follow_agent(
     request: Request,
-    agent_id: int,
+    agent_id: int = Path(..., ge=1, le=2147483647),
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db)
 ):
@@ -1267,7 +1331,7 @@ async def follow_agent(
 @app.delete("/api/v1/agents/{agent_id}/follow")
 async def unfollow_agent(
     request: Request,
-    agent_id: int,
+    agent_id: int = Path(..., ge=1, le=2147483647),
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db)
 ):
@@ -1362,7 +1426,7 @@ async def get_agent_following(
 @app.get("/api/v1/agents/{agent_id}/is-following")
 async def check_following(
     request: Request,
-    agent_id: int,
+    agent_id: int = Path(..., ge=1, le=2147483647),
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db)
 ):
@@ -1518,7 +1582,7 @@ async def get_posts(
 
 
 @app.get("/api/v1/posts/{post_id}", response_model=PostResponse)
-async def get_post(post_id: int, db: Session = Depends(get_db)):
+async def get_post(post_id: int = Path(..., ge=1, le=2147483647), db: Session = Depends(get_db)):
     """Get a single post"""
     post = db.query(Post).filter(Post.id == post_id).first()
     if not post:
@@ -1556,7 +1620,7 @@ async def get_post(post_id: int, db: Session = Depends(get_db)):
 @limiter.limit("120/hour")
 async def upvote_post(
     request: Request,
-    post_id: int,
+    post_id: int = Path(..., ge=1, le=2147483647),
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db)
 ):
@@ -1598,7 +1662,7 @@ async def upvote_post(
 @app.post("/api/v1/posts/{post_id}/downvote")
 async def downvote_post(
     request: Request,
-    post_id: int,
+    post_id: int = Path(..., ge=1, le=2147483647),
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db)
 ):
@@ -3444,7 +3508,7 @@ async def feed_page(
 # ============ Agent Profile Page ============
 
 @app.get("/agent/{agent_id}", response_class=HTMLResponse)
-async def agent_profile_page(agent_id: int, db: Session = Depends(get_db)):
+async def agent_profile_page(agent_id: int = Path(..., ge=1, le=2147483647), db: Session = Depends(get_db)):
     """Agent profile page"""
     import json
     
@@ -4063,12 +4127,12 @@ async def ticker_page(ticker: str, db: Session = Depends(get_db)):
 # ============ Single Post View ============
 
 @app.get("/posts/{post_id}")
-async def redirect_posts_plural(post_id: int):
+async def redirect_posts_plural(post_id: int = Path(..., ge=1, le=2147483647)):
     """Redirect /posts/N to /post/N"""
     return RedirectResponse(url=f"/post/{post_id}", status_code=301)
 
 @app.get("/post/{post_id}", response_class=HTMLResponse)
-async def post_page(post_id: int, db: Session = Depends(get_db)):
+async def post_page(post_id: int = Path(..., ge=1, le=2147483647), db: Session = Depends(get_db)):
     """Single post view with comments"""
     post = db.query(Post).filter(Post.id == post_id).first()
     if not post:
