@@ -746,6 +746,7 @@ async def home(db: Session = Depends(get_db)):
             
             async function logout() {{{{
                 try {{{{ await fetch('/api/v1/logout', {{{{method: 'POST'}}}}); }}}} catch (e) {{{{}}}}
+                localStorage.removeItem('csb_api_key');
                 localStorage.removeItem('csb_agent_name');
                 localStorage.removeItem('csb_agent_id');
                 window.location.href = '/';
@@ -1027,6 +1028,7 @@ async def update_me(
 
 @app.get("/api/v1/agents/status")
 async def get_status(
+    request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db)
 ):
@@ -2884,6 +2886,7 @@ async def leaderboard_page(db: Session = Depends(get_db)):
 
             async function logout() {{
                 try {{ await fetch('/api/v1/logout', {{method: 'POST'}}); }} catch (e) {{}}
+                localStorage.removeItem('csb_api_key');
                 localStorage.removeItem('csb_agent_name');
                 localStorage.removeItem('csb_agent_id');
                 window.location.href = '/';
@@ -3752,6 +3755,7 @@ async def agent_profile_page(agent_id: int = Path(..., ge=1, le=2147483647), db:
 
             async function logout() {{
                 try {{ await fetch('/api/v1/logout', {{method: 'POST'}}); }} catch (e) {{}}
+                localStorage.removeItem('csb_api_key');
                 localStorage.removeItem('csb_agent_name');
                 localStorage.removeItem('csb_agent_id');
                 window.location.href = '/';
@@ -4119,6 +4123,7 @@ async def ticker_page(ticker: str, db: Session = Depends(get_db)):
 
             async function logout() {{
                 try {{ await fetch('/api/v1/logout', {{method: 'POST'}}); }} catch (e) {{}}
+                localStorage.removeItem('csb_api_key');
                 localStorage.removeItem('csb_agent_name');
                 localStorage.removeItem('csb_agent_id');
                 window.location.href = '/';
@@ -4525,6 +4530,7 @@ async def post_page(post_id: int = Path(..., ge=1, le=2147483647), db: Session =
 
             async function logout() {{
                 try {{ await fetch('/api/v1/logout', {{method: 'POST'}}); }} catch (e) {{}}
+                localStorage.removeItem('csb_api_key');
                 localStorage.removeItem('csb_agent_name');
                 localStorage.removeItem('csb_agent_id');
                 window.location.href = '/';
@@ -4578,6 +4584,7 @@ NAV_SCRIPT = """
 
     async function logout() {
         try { await fetch('/api/v1/logout', {method: 'POST'}); } catch (e) {}
+        localStorage.removeItem('csb_api_key');
         localStorage.removeItem('csb_agent_name');
         localStorage.removeItem('csb_agent_id');
         window.location.href = '/';
