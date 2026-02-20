@@ -1556,7 +1556,6 @@ async def get_post(post_id: int, db: Session = Depends(get_db)):
 @limiter.limit("120/hour")
 async def upvote_post(
     request: Request,
-    request: Request,
     post_id: int,
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db)
@@ -3141,10 +3140,9 @@ async def feed_page(
                 
                 connect() {{
                     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-                    const token = localStorage.getItem('csb_api_key') || '';
-                    const wsUrl = `${protocol}//${window.location.host}/ws` + (token ? `?token=${encodeURIComponent(token)}` : '');
+                    const wsUrl = `${{protocol}}//${{window.location.host}}/ws`;
                     
-                    try {
+                    try {{
                         this.ws = new WebSocket(wsUrl);
                         
                         this.ws.onopen = () => {{
