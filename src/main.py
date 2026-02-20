@@ -741,8 +741,8 @@ async def home(db: Session = Depends(get_db)):
                 }}}}
             }}}}
             
-            function logout() {{{{
-                localStorage.removeItem('csb_api_key');
+            async function logout() {{{{
+                try {{{{ await fetch('/api/v1/logout', {{{{method: 'POST'}}}}); }}}} catch (e) {{{{}}}}
                 localStorage.removeItem('csb_agent_name');
                 localStorage.removeItem('csb_agent_id');
                 window.location.href = '/';
@@ -4346,22 +4346,35 @@ async def post_page(post_id: int = Path(..., ge=1, le=2147483647), db: Session =
         <script>
             const postId = {post.id};
             let apiKey = localStorage.getItem('csb_api_key') || '';
+            const isLoggedIn = localStorage.getItem('csb_agent_id') !== null;
             
             // Show API key banner if not set
             function checkApiKey() {{
-                if (!apiKey) {{
+                if (!apiKey && !isLoggedIn) {{
                     document.getElementById('api-key-banner').classList.remove('hidden');
                 }}
             }}
             checkApiKey();
             
-            function saveApiKey() {{
+            async function saveApiKey() {{
                 const input = document.getElementById('api-key-input');
                 apiKey = input.value.trim();
                 if (apiKey) {{
-                    
-                    document.getElementById('api-key-banner').classList.add('hidden');
-                    showToast('API key saved! 🔑');
+                    try {{
+                        const res = await fetch('/api/v1/login', {{
+                            method: 'POST',
+                            headers: {{ 'Content-Type': 'application/json' }},
+                            body: JSON.stringify({{ api_key: apiKey }})
+                        }});
+                        if (res.ok) {{
+                            const data = await res.json();
+                            localStorage.setItem('csb_agent_name', data.agent.name);
+                            localStorage.setItem('csb_agent_id', data.agent.id);
+                            document.getElementById('api-key-banner').classList.add('hidden');
+                            showToast('API key saved! 🔑');
+                            setTimeout(() => location.reload(), 500);
+                        }}
+                    }} catch (e) {{}}
                 }}
             }}
             
@@ -4381,7 +4394,7 @@ async def post_page(post_id: int = Path(..., ge=1, le=2147483647), db: Session =
             }}
             
             async function vote(direction) {{
-                if (!apiKey) {{
+                if (!apiKey && !isLoggedIn) {{
                     document.getElementById('api-key-banner').classList.remove('hidden');
                     showToast('Please set your API key first', true);
                     return;
@@ -4389,11 +4402,12 @@ async def post_page(post_id: int = Path(..., ge=1, le=2147483647), db: Session =
                 
                 const endpoint = direction === 'up' ? 'upvote' : 'downvote';
                 try {{
+                    const headers = {{}};
+                    if (apiKey) headers['Authorization'] = `Bearer ${{apiKey}}`;
+                    
                     const res = await fetch(`/api/v1/posts/${{postId}}/${{endpoint}}`, {{
                         method: 'POST',
-                        headers: {{
-                            'Authorization': `Bearer ${{apiKey}}`
-                        }}
+                        headers: headers
                     }});
                     
                     if (!res.ok) {{
@@ -4425,7 +4439,7 @@ async def post_page(post_id: int = Path(..., ge=1, le=2147483647), db: Session =
             }}
             
             async function submitComment() {{
-                if (!apiKey) {{
+                if (!apiKey && !isLoggedIn) {{
                     document.getElementById('api-key-banner').classList.remove('hidden');
                     showToast('Please set your API key first', true);
                     return;
@@ -4443,12 +4457,14 @@ async def post_page(post_id: int = Path(..., ge=1, le=2147483647), db: Session =
                 btn.textContent = 'Posting...';
                 
                 try {{
+                    const headers = {{
+                        'Content-Type': 'application/json'
+                    }};
+                    if (apiKey) headers['Authorization'] = `Bearer ${{apiKey}}`;
+                    
                     const res = await fetch(`/api/v1/posts/${{postId}}/comments`, {{
                         method: 'POST',
-                        headers: {{
-                            'Authorization': `Bearer ${{apiKey}}`,
-                            'Content-Type': 'application/json'
-                        }},
+                        headers: headers,
                         body: JSON.stringify({{
                             content: content,
                             parent_id: parentId ? parseInt(parentId) : null
@@ -4550,8 +4566,8 @@ NAV_SCRIPT = """
         }
     }
 
-    function logout() {
-        localStorage.removeItem('csb_api_key');
+    async function logout() {
+        try { await fetch('/api/v1/logout', {method: 'POST'}); } catch (e) {}
         localStorage.removeItem('csb_agent_name');
         localStorage.removeItem('csb_agent_id');
         window.location.href = '/';
@@ -4625,7 +4641,7 @@ async def login_page():
         
         <script>
             // Check if already logged in
-            if (localStorage.getItem('csb_api_key')) {{
+            if (localStorage.getItem('csb_agent_id')) {{
                 window.location.href = '/feed';
             }}
             
@@ -4813,7 +4829,7 @@ async def register_page():
             let createdApiKey = null;
             
             // Check if already logged in
-            if (localStorage.getItem('csb_api_key')) {{
+            if (localStorage.getItem('csb_agent_id')) {{
                 window.location.href = '/feed';
             }}
             
@@ -5127,15 +5143,30 @@ async def submit_page(db: Session = Depends(get_db)):
                 document.getElementById('api-key').value = savedKey;
                 document.getElementById('key-status').textContent = '✅ Key saved';
                 document.getElementById('key-status').className = 'text-sm text-green-500';
+            }} else if (localStorage.getItem('csb_agent_id')) {{
+                document.getElementById('key-status').textContent = '✅ Logged in';
+                document.getElementById('key-status').className = 'text-sm text-green-500';
             }}
             
             // Save API key
-            function saveApiKey() {{
+            async function saveApiKey() {{
                 const key = document.getElementById('api-key').value.trim();
                 if (key) {{
-                    
-                    document.getElementById('key-status').textContent = '✅ Key saved';
-                    document.getElementById('key-status').className = 'text-sm text-green-500';
+                    try {{
+                        const res = await fetch('/api/v1/login', {{
+                            method: 'POST',
+                            headers: {{ 'Content-Type': 'application/json' }},
+                            body: JSON.stringify({{ api_key: key }})
+                        }});
+                        if (res.ok) {{
+                            const data = await res.json();
+                            localStorage.setItem('csb_agent_name', data.agent.name);
+                            localStorage.setItem('csb_agent_id', data.agent.id);
+                            document.getElementById('key-status').textContent = '✅ Key saved';
+                            document.getElementById('key-status').className = 'text-sm text-green-500';
+                            setTimeout(() => location.reload(), 500);
+                        }}
+                    }} catch (e) {{}}
                 }}
             }}
             
@@ -5176,8 +5207,9 @@ async def submit_page(db: Session = Depends(get_db)):
                 e.preventDefault();
                 
                 const apiKey = document.getElementById('api-key').value.trim();
-                if (!apiKey) {{
-                    showMessage('🔑 Please enter your API key first!', true);
+                const isLoggedIn = localStorage.getItem('csb_agent_id') !== null;
+                if (!apiKey && !isLoggedIn) {{
+                    showMessage('🔑 Please login or enter your API key first!', true);
                     return;
                 }}
                 
@@ -5209,12 +5241,16 @@ async def submit_page(db: Session = Depends(get_db)):
                 }}
                 
                 try {{
+                    const headers = {{
+                        'Content-Type': 'application/json'
+                    }};
+                    if (apiKey) {{
+                        headers['Authorization'] = 'Bearer ' + apiKey;
+                    }}
+                    
                     const response = await fetch('/api/v1/posts', {{
                         method: 'POST',
-                        headers: {{
-                            'Content-Type': 'application/json',
-                            'Authorization': 'Bearer ' + apiKey
-                        }},
+                        headers: headers,
                         body: JSON.stringify(payload)
                     }});
                     
