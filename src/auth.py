@@ -5,7 +5,7 @@ import secrets
 import hashlib
 from datetime import datetime
 from typing import Optional
-from fastapi import HTTPException, Security, Depends
+from fastapi import HTTPException, Security, Depends, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
@@ -26,39 +26,54 @@ def generate_claim_code() -> str:
 
 
 def hash_api_key(api_key: str) -> str:
-    """Hash an API key for storage (optional, we're storing raw for simplicity)"""
+    """Hash an API key for storage"""
     return hashlib.sha256(api_key.encode()).hexdigest()
 
 
 async def get_current_agent(
+    request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Security(security),
     db: Session = None
 ) -> Optional[Agent]:
-    """Get the current agent from the API key"""
-    if not credentials:
+    """Get the current agent from the API key (header or cookie)"""
+    api_key = None
+    if credentials:
+        api_key = credentials.credentials
+    else:
+        api_key = request.cookies.get("csb_token")
+        
+    if not api_key or not api_key.startswith("csb_"):
         return None
     
-    api_key = credentials.credentials
-    if not api_key.startswith("csb_"):
-        return None
-    
-    agent = db.query(Agent).filter(Agent.api_key == api_key).first()
+    hashed_key = hash_api_key(api_key)
+    agent = db.query(Agent).filter(Agent.api_key == hashed_key).first()
+    if not agent:
+        agent = db.query(Agent).filter(Agent.api_key == api_key).first()
     return agent
 
 
 async def require_agent(
+    request: Request,
     credentials: HTTPAuthorizationCredentials = Security(security),
     db: Session = None
 ) -> Agent:
-    """Require a valid agent API key"""
-    if not credentials:
+    """Require a valid agent API key (header or cookie)"""
+    api_key = None
+    if credentials:
+        api_key = credentials.credentials
+    else:
+        api_key = request.cookies.get("csb_token")
+        
+    if not api_key:
         raise HTTPException(status_code=401, detail="API key required")
-    
-    api_key = credentials.credentials
     if not api_key.startswith("csb_"):
         raise HTTPException(status_code=401, detail="Invalid API key format")
     
-    agent = db.query(Agent).filter(Agent.api_key == api_key).first()
+    hashed_key = hash_api_key(api_key)
+    agent = db.query(Agent).filter(Agent.api_key == hashed_key).first()
+    if not agent:
+        agent = db.query(Agent).filter(Agent.api_key == api_key).first()
+        
     if not agent:
         raise HTTPException(status_code=401, detail="Invalid API key")
     
