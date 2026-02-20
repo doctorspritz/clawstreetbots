@@ -2,6 +2,7 @@
 ClawStreetBots - Main FastAPI Application
 WSB for AI Agents 🤖📈📉
 """
+import html
 import os
 import re
 from datetime import datetime, timedelta
@@ -15,12 +16,13 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, RedirectResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
 from .websocket import manager, broadcast_new_post, broadcast_post_vote, broadcast_new_comment
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import create_engine, desc, func, text
 from sqlalchemy.orm import sessionmaker, Session
 
@@ -142,9 +144,32 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept"],
 )
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://cdn.jsdelivr.net; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' https://api.dicebear.com https://*.dicebear.com data:; "
+            "connect-src 'self' wss: ws:; "
+            "frame-ancestors 'none'; object-src 'none'; base-uri 'self'"
+        )
+        if IS_PROD:
+            response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
+        return response
+
+
+app.add_middleware(SecurityHeadersMiddleware)
 
 
 # --- Health checks ---
@@ -162,7 +187,7 @@ def readyz():
             conn.execute(text("SELECT 1"))
         ensure_schema(engine)
     except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Not ready: {e}")
+        raise HTTPException(status_code=503, detail="Not ready")
     return {"ok": True}
 
 
@@ -176,18 +201,49 @@ def sanitize(text: Optional[str]) -> Optional[str]:
     return bleach.clean(text, tags=ALLOWED_TAGS, strip=True)
 
 
+def esc(text) -> str:
+    """HTML-escape a value for safe interpolation into templates."""
+    if text is None:
+        return ""
+    return html.escape(str(text), quote=True)
+
+
 # ============ Pydantic Models ============
+
+def _validate_avatar_url(v: Optional[str]) -> Optional[str]:
+    """Reject javascript:/data: URIs and enforce length."""
+    if v is None:
+        return v
+    v = v.strip()
+    if not v:
+        return None
+    if len(v) > 500:
+        raise ValueError("avatar_url must be 500 characters or fewer")
+    if not re.match(r'^https?://', v, re.IGNORECASE):
+        raise ValueError("avatar_url must use http:// or https:// scheme")
+    return v
+
 
 class AgentRegister(BaseModel):
     name: str = Field(..., min_length=2, max_length=100)
     description: Optional[str] = None
     avatar_url: Optional[str] = None
 
+    @field_validator("avatar_url")
+    @classmethod
+    def check_avatar_url(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_avatar_url(v)
+
 
 class AgentUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=2, max_length=100)
     description: Optional[str] = None
     avatar_url: Optional[str] = None
+
+    @field_validator("avatar_url")
+    @classmethod
+    def check_avatar_url(cls, v: Optional[str]) -> Optional[str]:
+        return _validate_avatar_url(v)
 
 
 class AgentResponse(BaseModel):
@@ -344,13 +400,13 @@ async def home(db: Session = Depends(get_db)):
         posts_html += f"""
         <a href="/feed" class="block bg-gray-800/50 hover:bg-gray-800 border border-gray-700/50 rounded-lg p-4 transition-all">
             <div class="flex items-center gap-3 mb-2">
-                <span class="{flair_class} px-2 py-0.5 rounded text-xs font-semibold">{post.flair or 'Discussion'}</span>
-                {f'<span class="text-blue-400 text-xs">${post.tickers}</span>' if post.tickers else ''}
+                <span class="{flair_class} px-2 py-0.5 rounded text-xs font-semibold">{esc(post.flair or 'Discussion')}</span>
+                {f'<span class="text-blue-400 text-xs">${esc(post.tickers)}</span>' if post.tickers else ''}
                 {gain_badge}
                 <span class="text-gray-500 text-xs ml-auto">⬆️ {post.score}</span>
             </div>
-            <h3 class="font-semibold text-white truncate">{post.title}</h3>
-            <p class="text-gray-400 text-sm mt-1">by {post.agent.name} in m/{post.submolt}</p>
+            <h3 class="font-semibold text-white truncate">{esc(post.title)}</h3>
+            <p class="text-gray-400 text-sm mt-1">by {esc(post.agent.name)} in m/{esc(post.submolt)}</p>
         </a>
         """
     
@@ -366,7 +422,7 @@ async def home(db: Session = Depends(get_db)):
         <div class="flex items-center gap-3 bg-gray-800/50 border border-gray-700/50 rounded-lg p-3">
             <span class="text-xl">{medal}</span>
             <div class="flex-1 min-w-0">
-                <p class="font-semibold text-white truncate">{agent.name}</p>
+                <p class="font-semibold text-white truncate">{esc(agent.name)}</p>
                 <p class="text-xs text-gray-400">{agent.total_trades} trades</p>
             </div>
             <div class="text-right">
@@ -384,7 +440,7 @@ async def home(db: Session = Depends(get_db)):
     for ticker, count in trending_tickers:
         tickers_html += f"""
         <span class="inline-flex items-center gap-1 bg-gray-800 border border-gray-700 px-3 py-1.5 rounded-full text-sm hover:border-green-500 transition-all cursor-pointer">
-            <span class="text-green-400 font-semibold">${ticker}</span>
+            <span class="text-green-400 font-semibold">${esc(ticker)}</span>
             <span class="text-gray-500 text-xs">({count})</span>
         </span>
         """
@@ -585,10 +641,17 @@ async def home(db: Session = Depends(get_db)):
                 const authNav = document.getElementById('auth-nav');
                 
                 if (apiKey && agentName) {{{{
-                    authNav.innerHTML = `
-                        <a href="/agent/${{{{agentId}}}}" class="text-green-400 hover:text-green-300 font-semibold">🤖 ${{{{agentName}}}}</a>
-                        <button onclick="logout()" class="bg-red-600 hover:bg-red-700 px-3 py-1 rounded text-sm">Logout</button>
-                    `;
+                    authNav.textContent = '';
+                    const link = document.createElement('a');
+                    link.href = '/agent/' + encodeURIComponent(agentId);
+                    link.className = 'text-green-400 hover:text-green-300 font-semibold';
+                    link.textContent = '\ud83e\udd16 ' + agentName;
+                    const btn = document.createElement('button');
+                    btn.className = 'bg-red-600 hover:bg-red-700 px-3 py-1 rounded text-sm';
+                    btn.textContent = 'Logout';
+                    btn.addEventListener('click', logout);
+                    authNav.appendChild(link);
+                    authNav.appendChild(btn);
                 }}}} else {{{{
                     authNav.innerHTML = `
                         <a href="/login" class="text-gray-400 hover:text-white transition-colors">Login</a>
@@ -628,6 +691,11 @@ async def get_stats(db: Session = Depends(get_db)):
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket endpoint for real-time feed updates"""
+    origin = (websocket.headers.get("origin") or "").rstrip("/")
+    allowed = {o.rstrip("/") for o in ALLOWED_ORIGINS}
+    if origin and origin not in allowed:
+        await websocket.close(code=4003)
+        return
     await manager.connect(websocket)
     try:
         while True:
@@ -2322,9 +2390,9 @@ async def leaderboard_page(db: Session = Depends(get_db)):
             </td>
             <td class="py-4 px-4">
                 <a href="/agent/{agent.id}" class="flex items-center gap-3 group">
-                    <img src="{avatar_url}" alt="{agent.name}" class="w-10 h-10 rounded-full bg-gray-700 ring-2 ring-gray-600 group-hover:ring-green-500 transition-all" onerror="this.src='https://api.dicebear.com/7.x/bottts-neutral/svg?seed={agent.id}'">
+                    <img src="{esc(avatar_url)}" alt="{esc(agent.name)}" class="w-10 h-10 rounded-full bg-gray-700 ring-2 ring-gray-600 group-hover:ring-green-500 transition-all" onerror="this.src='https://api.dicebear.com/7.x/bottts-neutral/svg?seed={agent.id}'">
                     <div>
-                        <span class="font-semibold text-white group-hover:text-green-400 transition-colors">{agent.name}</span>
+                        <span class="font-semibold text-white group-hover:text-green-400 transition-colors">{esc(agent.name)}</span>
                         {recent_activity_html}
                     </div>
                 </a>
@@ -2489,6 +2557,7 @@ async def leaderboard_page(db: Session = Depends(get_db)):
         <div class="lg:hidden h-16"></div>
         
         <script>
+            const escHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c]));
             let currentSort = 'karma';
             let currentPeriod = 'all';
             
@@ -2576,9 +2645,9 @@ async def leaderboard_page(db: Session = Depends(get_db)):
                                 </td>
                                 <td class="py-4 px-4">
                                     <a href="/agent/${{agent.id}}" class="flex items-center gap-3 group">
-                                        <img src="${{agent.avatar_url}}" alt="${{agent.name}}" class="w-10 h-10 rounded-full bg-gray-700 ring-2 ring-gray-600 group-hover:ring-green-500 transition-all" onerror="this.src='https://api.dicebear.com/7.x/bottts-neutral/svg?seed=${{agent.id}}'">
+                                        <img src="${{escHtml(agent.avatar_url)}}" alt="${{escHtml(agent.name)}}" class="w-10 h-10 rounded-full bg-gray-700 ring-2 ring-gray-600 group-hover:ring-green-500 transition-all" onerror="this.src='https://api.dicebear.com/7.x/bottts-neutral/svg?seed=${{agent.id}}'">
                                         <div>
-                                            <span class="font-semibold text-white group-hover:text-green-400 transition-colors">${{agent.name}}</span>
+                                            <span class="font-semibold text-white group-hover:text-green-400 transition-colors">${{escHtml(agent.name)}}</span>
                                             ${{activityHtml}}
                                         </div>
                                     </a>
@@ -2606,12 +2675,19 @@ async def leaderboard_page(db: Session = Depends(get_db)):
                 const agentName = localStorage.getItem('csb_agent_name');
                 const agentId = localStorage.getItem('csb_agent_id');
                 const authNav = document.getElementById('auth-nav');
-                
+
                 if (apiKey && agentName) {{
-                    authNav.innerHTML = `
-                        <a href="/agent/${{agentId}}" class="text-green-400 hover:text-green-300 font-semibold">🤖 ${{agentName}}</a>
-                        <button onclick="logout()" class="bg-red-600 hover:bg-red-700 px-3 py-1 rounded text-sm">Logout</button>
-                    `;
+                    authNav.textContent = '';
+                    const link = document.createElement('a');
+                    link.href = '/agent/' + encodeURIComponent(agentId);
+                    link.className = 'text-green-400 hover:text-green-300 font-semibold';
+                    link.textContent = '\ud83e\udd16 ' + agentName;
+                    const btn = document.createElement('button');
+                    btn.className = 'bg-red-600 hover:bg-red-700 px-3 py-1 rounded text-sm';
+                    btn.textContent = 'Logout';
+                    btn.addEventListener('click', logout);
+                    authNav.appendChild(link);
+                    authNav.appendChild(btn);
                 }} else {{
                     authNav.innerHTML = `
                         <a href="/login" class="text-gray-400 hover:text-white transition-colors">Login</a>
@@ -2619,14 +2695,14 @@ async def leaderboard_page(db: Session = Depends(get_db)):
                     `;
                 }}
             }}
-            
+
             function logout() {{
                 localStorage.removeItem('csb_api_key');
                 localStorage.removeItem('csb_agent_name');
                 localStorage.removeItem('csb_agent_id');
                 window.location.href = '/';
             }}
-            
+
             document.addEventListener('DOMContentLoaded', updateNav);
         </script>
     </body>
@@ -2710,13 +2786,13 @@ async def feed_page(
             }
             pos_class = pos_colors.get(post.position_type.lower(), "text-gray-400")
             pos_emoji = {"long": "🟢", "short": "🔴", "calls": "📞", "puts": "📉"}.get(post.position_type.lower(), "")
-            position_badge = f'<span class="{pos_class} text-xs uppercase font-medium">{pos_emoji} {post.position_type}</span>'
+            position_badge = f'<span class="{pos_class} text-xs uppercase font-medium">{pos_emoji} {esc(post.position_type)}</span>'
 
         # Structured signal fields (optional)
         signal_bits: List[str] = []
         if post.timeframe:
             signal_bits.append(
-                f'<span class="bg-gray-900/40 text-gray-300 border border-gray-700/60 px-2 py-0.5 rounded-full text-xs font-medium">⏱ {post.timeframe}</span>'
+                f'<span class="bg-gray-900/40 text-gray-300 border border-gray-700/60 px-2 py-0.5 rounded-full text-xs font-medium">⏱ {esc(post.timeframe)}</span>'
             )
         if post.stop_loss is not None:
             signal_bits.append(
@@ -2735,7 +2811,7 @@ async def feed_page(
                 else "bg-gray-500/10 text-gray-300 border border-gray-500/20"
             )
             signal_bits.append(
-                f'<span class="{status_class} px-2 py-0.5 rounded-full text-xs font-medium">● {s}</span>'
+                f'<span class="{status_class} px-2 py-0.5 rounded-full text-xs font-medium">● {esc(s)}</span>'
             )
         signal_html = (
             f'<div class="flex flex-wrap items-center gap-2 mb-3">{"".join(signal_bits)}</div>'
@@ -2764,27 +2840,27 @@ async def feed_page(
                 </div>
                 <div class="flex-1 p-4">
                     <div class="flex items-center gap-3 mb-3">
-                        <img src="{avatar_url}" alt="{post.agent.name}" class="w-8 h-8 rounded-full bg-gray-700 ring-2 ring-gray-600" onerror="this.src='https://api.dicebear.com/7.x/bottts-neutral/svg?seed={post.agent_id}'">
+                        <img src="{esc(avatar_url)}" alt="{esc(post.agent.name)}" class="w-8 h-8 rounded-full bg-gray-700 ring-2 ring-gray-600" onerror="this.src='https://api.dicebear.com/7.x/bottts-neutral/svg?seed={post.agent_id}'">
                         <div class="flex flex-wrap items-center gap-2 text-sm">
-                            <a href="/agent/{post.agent_id}" class="font-semibold text-blue-400 hover:text-blue-300 transition-colors">{post.agent.name}</a>
+                            <a href="/agent/{post.agent_id}" class="font-semibold text-blue-400 hover:text-blue-300 transition-colors">{esc(post.agent.name)}</a>
                             <span class="text-gray-500">•</span>
-                            <a href="/feed?submolt={post.submolt}" class="text-gray-400 hover:text-gray-300 transition-colors">m/{post.submolt}</a>
+                            <a href="/feed?submolt={esc(post.submolt)}" class="text-gray-400 hover:text-gray-300 transition-colors">m/{esc(post.submolt)}</a>
                             <span class="text-gray-500">•</span>
                             <time class="text-gray-500" title="{post.created_at.isoformat()}">{relative_time(post.created_at)}</time>
                         </div>
                     </div>
                     <div class="flex flex-wrap items-center gap-2 mb-3">
                         <span class="{flair_class} border px-2 py-0.5 rounded-full text-xs font-medium">{flair}</span>
-                        {f'<span class="bg-blue-500/20 text-blue-400 border border-blue-500/30 px-2 py-0.5 rounded-full text-xs font-medium">💹 {post.tickers}</span>' if post.tickers else ''}
+                        {f'<span class="bg-blue-500/20 text-blue-400 border border-blue-500/30 px-2 py-0.5 rounded-full text-xs font-medium">💹 {esc(post.tickers)}</span>' if post.tickers else ''}
                         {position_badge}
                         {gain_badge}
                         {usd_badge}
                     </div>
                     {signal_html}
                     <h2 class="text-lg sm:text-xl font-bold mb-2 text-white hover:text-green-400 transition-colors">
-                        <a href="/post/{post.id}">{post.title}</a>
+                        <a href="/post/{post.id}">{esc(post.title)}</a>
                     </h2>
-                    {f'<p class="text-gray-400 text-sm leading-relaxed mb-3 line-clamp-3">{(post.content or "")[:300]}{"..." if post.content and len(post.content) > 300 else ""}</p>' if post.content else ''}
+                    {f'<p class="text-gray-400 text-sm leading-relaxed mb-3 line-clamp-3">{esc((post.content or "")[:300])}{"..." if post.content and len(post.content) > 300 else ""}</p>' if post.content else ''}
                     <div class="flex items-center gap-4 text-sm text-gray-500">
                         <a href="/post/{post.id}#comments" class="flex items-center gap-1.5 hover:text-gray-300 transition-colors">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -3117,7 +3193,16 @@ async def feed_page(
                 showToast(message) {{
                     const toast = document.createElement('div');
                     toast.className = 'fixed top-4 right-4 bg-gray-800 border border-green-500/50 text-white px-4 py-3 rounded-lg shadow-lg z-50 transform translate-x-full transition-transform duration-300';
-                    toast.innerHTML = `<div class="flex items-center gap-2"><span class="text-green-400">🔔</span><span>${{message}}</span></div>`;
+                    const toastInner = document.createElement('div');
+                    toastInner.className = 'flex items-center gap-2';
+                    const bell = document.createElement('span');
+                    bell.className = 'text-green-400';
+                    bell.textContent = '\ud83d\udd14';
+                    const msg = document.createElement('span');
+                    msg.textContent = message;
+                    toastInner.appendChild(bell);
+                    toastInner.appendChild(msg);
+                    toast.appendChild(toastInner);
                     document.body.appendChild(toast);
                     
                     // Animate in
@@ -3202,9 +3287,9 @@ async def feed_page(
                                 <div class="flex items-center gap-3 mb-3">
                                     <img src="https://api.dicebear.com/7.x/bottts-neutral/svg?seed=${{post.agent_id}}&backgroundColor=1f2937" alt="${{post.agent_name}}" class="w-8 h-8 rounded-full bg-gray-700 ring-2 ring-green-500/50">
                                     <div class="flex flex-wrap items-center gap-2 text-sm">
-                                        <a href="/agent/${{post.agent_id}}" class="font-semibold text-blue-400 hover:text-blue-300 transition-colors">${{post.agent_name}}</a>
+                                        <a href="/agent/${{post.agent_id}}" class="font-semibold text-blue-400 hover:text-blue-300 transition-colors">${{escapeHtml(post.agent_name)}}</a>
                                         <span class="text-gray-500">•</span>
-                                        <a href="/feed?submolt=${{post.submolt}}" class="text-gray-400 hover:text-gray-300 transition-colors">m/${{post.submolt}}</a>
+                                        <a href="/feed?submolt=${{escapeHtml(post.submolt)}}" class="text-gray-400 hover:text-gray-300 transition-colors">m/${{escapeHtml(post.submolt)}}</a>
                                         <span class="text-gray-500">•</span>
                                         <time class="text-gray-500">just now</time>
                                         <span class="bg-green-500/20 text-green-400 border border-green-500/30 px-2 py-0.5 rounded-full text-xs font-bold animate-pulse">NEW</span>
@@ -3212,12 +3297,12 @@ async def feed_page(
                                 </div>
                                 <div class="flex flex-wrap items-center gap-2 mb-3">
                                     <span class="${{flairClass}} border px-2 py-0.5 rounded-full text-xs font-medium">${{flair}}</span>
-                                    ${{post.tickers ? `<span class="bg-blue-500/20 text-blue-400 border border-blue-500/30 px-2 py-0.5 rounded-full text-xs font-medium">💹 ${{post.tickers}}</span>` : ''}}
+                                    ${{post.tickers ? `<span class="bg-blue-500/20 text-blue-400 border border-blue-500/30 px-2 py-0.5 rounded-full text-xs font-medium">💹 ${{escapeHtml(post.tickers)}}</span>` : ''}}
                                     ${{gainBadge}}
                                 </div>
                                 ${{signalRow}}
                                 <h2 class="text-lg sm:text-xl font-bold mb-2 text-white hover:text-green-400 transition-colors">
-                                    <a href="/post/${{post.id}}">${{post.title}}</a>
+                                    <a href="/post/${{post.id}}">${{escapeHtml(post.title)}}</a>
                                 </h2>
                                 ${{post.content ? `<p class="text-gray-400 text-sm leading-relaxed mb-3 line-clamp-3">${{post.content.substring(0, 300)}}${{post.content.length > 300 ? '...' : ''}}</p>` : ''}}
                                 <div class="flex items-center gap-4 text-sm text-gray-500">
@@ -3300,13 +3385,13 @@ async def agent_profile_page(agent_id: int, db: Session = Depends(get_db)):
         posts_html += f"""
         <div class="bg-gray-800 rounded-lg p-4 mb-3">
             <div class="flex items-center gap-2 mb-1">
-                <span class="bg-gray-700 px-2 py-0.5 rounded text-sm">{post.flair or 'Discussion'}</span>
-                {f'<span class="bg-blue-900 px-2 py-0.5 rounded text-sm">{post.tickers}</span>' if post.tickers else ''}
+                <span class="bg-gray-700 px-2 py-0.5 rounded text-sm">{esc(post.flair or 'Discussion')}</span>
+                {f'<span class="bg-blue-900 px-2 py-0.5 rounded text-sm">{esc(post.tickers)}</span>' if post.tickers else ''}
                 {gain_badge}
                 <span class="text-gray-500 text-sm ml-auto">⬆ {post.score}</span>
             </div>
-            <h4 class="font-semibold">{post.title}</h4>
-            <div class="text-sm text-gray-500">m/{post.submolt} • {post.created_at.strftime("%b %d, %Y")}</div>
+            <h4 class="font-semibold">{esc(post.title)}</h4>
+            <div class="text-sm text-gray-500">m/{esc(post.submolt)} • {post.created_at.strftime("%b %d, %Y")}</div>
         </div>
         """
     
@@ -3338,8 +3423,8 @@ async def agent_profile_page(agent_id: int, db: Session = Depends(get_db)):
                 <span class="text-xl font-bold">{total_value}</span>
                 {day_change}
             </div>
-            {f'<div class="text-sm text-gray-400">Holdings: {positions_preview}</div>' if positions_preview else ''}
-            {f'<div class="text-sm text-gray-500 mt-1">{p.note}</div>' if p.note else ''}
+            {f'<div class="text-sm text-gray-400">Holdings: {esc(positions_preview)}</div>' if positions_preview else ''}
+            {f'<div class="text-sm text-gray-500 mt-1">{esc(p.note)}</div>' if p.note else ''}
             <div class="text-xs text-gray-600 mt-2">{p.created_at.strftime("%b %d, %Y %H:%M")}</div>
         </div>
         """
@@ -3356,13 +3441,13 @@ async def agent_profile_page(agent_id: int, db: Session = Depends(get_db)):
         theses_html += f"""
         <div class="bg-gray-800 rounded-lg p-4 mb-3">
             <div class="flex items-center gap-2 mb-2">
-                <span class="bg-blue-900 px-2 py-0.5 rounded font-mono">{t.ticker}</span>
-                {f'<span class="text-{conviction_color}-500 text-sm">{t.conviction} conviction</span>' if t.conviction else ''}
+                <span class="bg-blue-900 px-2 py-0.5 rounded font-mono">{esc(t.ticker)}</span>
+                {f'<span class="text-{conviction_color}-500 text-sm">{esc(t.conviction)} conviction</span>' if t.conviction else ''}
                 <span>{position_emoji}</span>
                 {f'<span class="text-green-500 text-sm ml-auto">PT: ${t.price_target:.2f}</span>' if t.price_target else ''}
             </div>
-            <h4 class="font-semibold mb-1">{t.title}</h4>
-            {f'<p class="text-gray-400 text-sm">{t.summary[:200]}{"..." if len(t.summary or "") > 200 else ""}</p>' if t.summary else ''}
+            <h4 class="font-semibold mb-1">{esc(t.title)}</h4>
+            {f'<p class="text-gray-400 text-sm">{esc(t.summary[:200])}{"..." if len(t.summary or "") > 200 else ""}</p>' if t.summary else ''}
             <div class="text-xs text-gray-600 mt-2">{t.created_at.strftime("%b %d, %Y")} • ⬆ {t.score}</div>
         </div>
         """
@@ -3378,7 +3463,7 @@ async def agent_profile_page(agent_id: int, db: Session = Depends(get_db)):
     <!DOCTYPE html>
     <html>
     <head>
-        <title>{agent.name} - ClawStreetBots</title>
+        <title>{esc(agent.name)} - ClawStreetBots</title>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <script src="https://cdn.tailwindcss.com"></script>
@@ -3401,11 +3486,11 @@ async def agent_profile_page(agent_id: int, db: Session = Depends(get_db)):
             <div class="bg-gray-800 rounded-lg p-6 mb-8">
                 <div class="flex items-start gap-6">
                     <div class="w-24 h-24 bg-gray-700 rounded-full flex items-center justify-center text-4xl">
-                        {f'<img src="{agent.avatar_url}" class="w-24 h-24 rounded-full object-cover" />' if agent.avatar_url else '🤖'}
+                        {f'<img src="{esc(agent.avatar_url)}" class="w-24 h-24 rounded-full object-cover" />' if agent.avatar_url else '🤖'}
                     </div>
                     <div class="flex-1">
-                        <h1 class="text-3xl font-bold mb-2">{agent.name}</h1>
-                        <p class="text-gray-400 mb-4">{agent.description or 'No description provided'}</p>
+                        <h1 class="text-3xl font-bold mb-2">{esc(agent.name)}</h1>
+                        <p class="text-gray-400 mb-4">{esc(agent.description or 'No description provided')}</p>
                         <div class="flex flex-wrap gap-4 text-sm">
                             <div class="bg-gray-700 px-3 py-2 rounded">
                                 <span class="text-gray-400">Karma</span>
@@ -3458,12 +3543,19 @@ async def agent_profile_page(agent_id: int, db: Session = Depends(get_db)):
                 const agentName = localStorage.getItem('csb_agent_name');
                 const agentId = localStorage.getItem('csb_agent_id');
                 const authNav = document.getElementById('auth-nav');
-                
+
                 if (apiKey && agentName) {{
-                    authNav.innerHTML = `
-                        <a href="/agent/${{agentId}}" class="text-green-400 hover:text-green-300 font-semibold">🤖 ${{agentName}}</a>
-                        <button onclick="logout()" class="bg-red-600 hover:bg-red-700 px-3 py-1 rounded text-sm">Logout</button>
-                    `;
+                    authNav.textContent = '';
+                    const link = document.createElement('a');
+                    link.href = '/agent/' + encodeURIComponent(agentId);
+                    link.className = 'text-green-400 hover:text-green-300 font-semibold';
+                    link.textContent = '\ud83e\udd16 ' + agentName;
+                    const btn = document.createElement('button');
+                    btn.className = 'bg-red-600 hover:bg-red-700 px-3 py-1 rounded text-sm';
+                    btn.textContent = 'Logout';
+                    btn.addEventListener('click', logout);
+                    authNav.appendChild(link);
+                    authNav.appendChild(btn);
                 }} else {{
                     authNav.innerHTML = `
                         <a href="/login" class="hover:text-green-500">Login</a>
@@ -3471,14 +3563,14 @@ async def agent_profile_page(agent_id: int, db: Session = Depends(get_db)):
                     `;
                 }}
             }}
-            
+
             function logout() {{
                 localStorage.removeItem('csb_api_key');
                 localStorage.removeItem('csb_agent_name');
                 localStorage.removeItem('csb_agent_id');
                 window.location.href = '/';
             }}
-            
+
             document.addEventListener('DOMContentLoaded', updateNav);
         </script>
     </body>
@@ -3552,7 +3644,7 @@ async def ticker_page(ticker: str, db: Session = Depends(get_db)):
         contributors_html += f"""
         <div class="flex items-center gap-3 bg-gray-800/50 rounded-lg p-3">
             <span class="text-lg">{medal}</span>
-            <a href="/agent/{agent_id}" class="flex-1 text-blue-400 hover:text-blue-300 font-medium truncate">{stats["name"]}</a>
+            <a href="/agent/{agent_id}" class="flex-1 text-blue-400 hover:text-blue-300 font-medium truncate">{esc(stats["name"])}</a>
             <div class="text-right">
                 <div class="text-sm text-gray-400">{stats["post_count"]} posts</div>
                 {avg_str}
@@ -3599,14 +3691,14 @@ async def ticker_page(ticker: str, db: Session = Depends(get_db)):
                 </div>
                 <div class="flex-1">
                     <div class="flex items-center gap-2 mb-1">
-                        <span class="bg-gray-700 px-2 py-0.5 rounded text-sm">{post.flair or 'Discussion'}</span>
-                        {f'<span class="bg-blue-900 px-2 py-0.5 rounded text-sm">{post.position_type}</span>' if post.position_type else ''}
+                        <span class="bg-gray-700 px-2 py-0.5 rounded text-sm">{esc(post.flair or 'Discussion')}</span>
+                        {f'<span class="bg-blue-900 px-2 py-0.5 rounded text-sm">{esc(post.position_type)}</span>' if post.position_type else ''}
                         {post_gain}
                     </div>
-                    <a href="/post/{post.id}" class="text-xl font-semibold mb-2 hover:text-green-400">{post.title}</a>
-                    <p class="text-gray-400 mb-2">{(post.content or '')[:200]}{'...' if post.content and len(post.content) > 200 else ''}</p>
+                    <a href="/post/{post.id}" class="text-xl font-semibold mb-2 hover:text-green-400">{esc(post.title)}</a>
+                    <p class="text-gray-400 mb-2">{esc((post.content or '')[:200])}{'...' if post.content and len(post.content) > 200 else ''}</p>
                     <div class="text-sm text-gray-500">
-                        by <a href="/agent/{post.agent_id}" class="text-blue-400 hover:underline">{post.agent.name}</a> in m/{post.submolt}
+                        by <a href="/agent/{post.agent_id}" class="text-blue-400 hover:underline">{esc(post.agent.name)}</a> in m/{esc(post.submolt)}
                     </div>
                 </div>
             </div>
@@ -3614,16 +3706,16 @@ async def ticker_page(ticker: str, db: Session = Depends(get_db)):
         """
     
     if not matching_posts:
-        posts_html = f'<div class="text-center text-gray-500 py-8">No posts yet for ${ticker}. Be the first! 🚀</div>'
+        posts_html = f'<div class="text-center text-gray-500 py-8">No posts yet for ${esc(ticker)}. Be the first! 🚀</div>'
     
     return f"""
     <!DOCTYPE html>
     <html>
     <head>
-        <title>${ticker} - ClawStreetBots</title>
+        <title>${esc(ticker)} - ClawStreetBots</title>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
-        <meta name="description" content="${ticker} ticker page on ClawStreetBots - {len(matching_posts)} posts, {sentiment_text} sentiment">
+        <meta name="description" content="${esc(ticker)} ticker page on ClawStreetBots - {len(matching_posts)} posts, {esc(sentiment_text)} sentiment">
         <script src="https://cdn.tailwindcss.com"></script>
         <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
     </head>
@@ -3644,7 +3736,7 @@ async def ticker_page(ticker: str, db: Session = Depends(get_db)):
             <!-- Stats Card -->
             <div class="bg-gray-800 rounded-lg p-6 mb-6">
                 <div class="flex items-center justify-between mb-4">
-                    <h1 class="text-4xl font-bold">${ticker}</h1>
+                    <h1 class="text-4xl font-bold">${esc(ticker)}</h1>
                     {sentiment}
                 </div>
                 <div class="grid grid-cols-4 gap-4 text-center">
@@ -3689,7 +3781,7 @@ async def ticker_page(ticker: str, db: Session = Depends(get_db)):
             <div class="grid md:grid-cols-3 gap-6 mb-8">
                 <!-- Posts Column -->
                 <div class="md:col-span-2">
-                    <h2 class="text-2xl font-bold mb-4">📊 Posts mentioning ${ticker}</h2>
+                    <h2 class="text-2xl font-bold mb-4">📊 Posts mentioning ${esc(ticker)}</h2>
                     {posts_html}
                 </div>
                 
@@ -3711,7 +3803,7 @@ async def ticker_page(ticker: str, db: Session = Depends(get_db)):
             // Price chart using Yahoo Finance via CORS proxy (for demo purposes)
             // In production, you'd use your own backend proxy or a paid API
             async function loadChart() {{
-                const ticker = "{ticker}";
+                const ticker = "{esc(ticker)}";
                 const chartContainer = document.getElementById('chart-container');
                 const chartError = document.getElementById('chart-error');
                 const chartLoading = document.getElementById('chart-loading');
@@ -3818,12 +3910,19 @@ async def ticker_page(ticker: str, db: Session = Depends(get_db)):
                 const agentName = localStorage.getItem('csb_agent_name');
                 const agentId = localStorage.getItem('csb_agent_id');
                 const authNav = document.getElementById('auth-nav');
-                
+
                 if (apiKey && agentName) {{
-                    authNav.innerHTML = `
-                        <a href="/agent/${{agentId}}" class="text-green-400 hover:text-green-300 font-semibold">🤖 ${{agentName}}</a>
-                        <button onclick="logout()" class="bg-red-600 hover:bg-red-700 px-3 py-1 rounded text-sm">Logout</button>
-                    `;
+                    authNav.textContent = '';
+                    const link = document.createElement('a');
+                    link.href = '/agent/' + encodeURIComponent(agentId);
+                    link.className = 'text-green-400 hover:text-green-300 font-semibold';
+                    link.textContent = '\ud83e\udd16 ' + agentName;
+                    const btn = document.createElement('button');
+                    btn.className = 'bg-red-600 hover:bg-red-700 px-3 py-1 rounded text-sm';
+                    btn.textContent = 'Logout';
+                    btn.addEventListener('click', logout);
+                    authNav.appendChild(link);
+                    authNav.appendChild(btn);
                 }} else {{
                     authNav.innerHTML = `
                         <a href="/login" class="hover:text-green-500">Login</a>
@@ -3831,14 +3930,14 @@ async def ticker_page(ticker: str, db: Session = Depends(get_db)):
                     `;
                 }}
             }}
-            
+
             function logout() {{
                 localStorage.removeItem('csb_api_key');
                 localStorage.removeItem('csb_agent_name');
                 localStorage.removeItem('csb_agent_id');
                 window.location.href = '/';
             }}
-            
+
             document.addEventListener('DOMContentLoaded', () => {{
                 updateNav();
                 loadChart();
@@ -3907,13 +4006,13 @@ async def post_page(post_id: int, db: Session = Depends(get_db)):
         <div class="mb-4 {indent} {border}" id="comment-{comment.id}">
             <div class="bg-gray-800 rounded-lg p-4">
                 <div class="flex items-center gap-2 mb-2">
-                    <a href="/agent/{comment.agent_id}" class="text-blue-400 hover:underline font-semibold">{comment.agent.name}</a>
+                    <a href="/agent/{comment.agent_id}" class="text-blue-400 hover:underline font-semibold">{esc(comment.agent.name)}</a>
                     <span class="text-gray-500 text-sm">{relative_time(comment.created_at)}</span>
                     <span class="text-gray-600 text-sm">• {comment.score} points</span>
                 </div>
-                <p class="text-gray-200 mb-3 whitespace-pre-wrap">{comment.content}</p>
+                <p class="text-gray-200 mb-3 whitespace-pre-wrap">{esc(comment.content)}</p>
                 <div class="flex items-center gap-4 text-sm">
-                    <button onclick="replyTo({comment.id}, '{comment.agent.name}')" class="text-gray-400 hover:text-green-500">
+                    <button class="text-gray-400 hover:text-green-500 reply-btn" data-comment-id="{comment.id}" data-agent-name="{esc(comment.agent.name)}">
                         💬 Reply
                     </button>
                 </div>
@@ -3951,7 +4050,7 @@ async def post_page(post_id: int, db: Session = Depends(get_db)):
     tickers_html = ""
     if post.tickers:
         tickers_list = [t.strip() for t in post.tickers.split(",") if t.strip()]
-        tickers_html = " ".join(f'<a href="/ticker/{t}" class="bg-blue-900 hover:bg-blue-800 px-2 py-1 rounded font-mono">${t}</a>' for t in tickers_list)
+        tickers_html = " ".join(f'<a href="/ticker/{esc(t)}" class="bg-blue-900 hover:bg-blue-800 px-2 py-1 rounded font-mono">${esc(t)}</a>' for t in tickers_list)
     
     entry_price = f'<div class="text-gray-400"><span class="text-gray-500">Entry:</span> ${post.entry_price:,.2f}</div>' if post.entry_price else ""
     current_price = f'<div class="text-gray-400"><span class="text-gray-500">Current:</span> ${post.current_price:,.2f}</div>' if post.current_price else ""
@@ -3960,7 +4059,7 @@ async def post_page(post_id: int, db: Session = Depends(get_db)):
     <!DOCTYPE html>
     <html>
     <head>
-        <title>{post.title} - ClawStreetBots</title>
+        <title>{esc(post.title)} - ClawStreetBots</title>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <script src="https://cdn.tailwindcss.com"></script>
@@ -4010,7 +4109,7 @@ async def post_page(post_id: int, db: Session = Depends(get_db)):
                     <div class="flex-1">
                         <!-- Flair & Tickers -->
                         <div class="flex flex-wrap items-center gap-2 mb-3">
-                            <span class="bg-gray-700 px-3 py-1 rounded">{post.flair or 'Discussion'}</span>
+                            <span class="bg-gray-700 px-3 py-1 rounded">{esc(post.flair or 'Discussion')}</span>
                             {position_badge}
                             {tickers_html}
                             {gain_badge}
@@ -4018,12 +4117,12 @@ async def post_page(post_id: int, db: Session = Depends(get_db)):
                         </div>
                         
                         <!-- Title -->
-                        <h1 class="text-3xl font-bold mb-4">{post.title}</h1>
+                        <h1 class="text-3xl font-bold mb-4">{esc(post.title)}</h1>
                         
                         <!-- Meta -->
                         <div class="flex items-center gap-4 text-sm text-gray-400 mb-4">
-                            <span>by <a href="/agent/{post.agent_id}" class="text-blue-400 hover:underline">{post.agent.name}</a></span>
-                            <span>in <span class="text-green-400">m/{post.submolt}</span></span>
+                            <span>by <a href="/agent/{post.agent_id}" class="text-blue-400 hover:underline">{esc(post.agent.name)}</a></span>
+                            <span>in <span class="text-green-400">m/{esc(post.submolt)}</span></span>
                             <span>{relative_time(post.created_at)}</span>
                             <span>{len(comments)} comments</span>
                         </div>
@@ -4033,7 +4132,7 @@ async def post_page(post_id: int, db: Session = Depends(get_db)):
                         
                         <!-- Content -->
                         <div class="text-gray-200 whitespace-pre-wrap leading-relaxed">
-                            {post.content or '<span class="text-gray-500 italic">No content</span>'}
+                            {esc(post.content) if post.content else '<span class="text-gray-500 italic">No content</span>'}
                         </div>
                     </div>
                 </div>
@@ -4201,12 +4300,19 @@ async def post_page(post_id: int, db: Session = Depends(get_db)):
                 const agentName = localStorage.getItem('csb_agent_name');
                 const agentId = localStorage.getItem('csb_agent_id');
                 const authNav = document.getElementById('auth-nav');
-                
+
                 if (apiKey && agentName) {{
-                    authNav.innerHTML = `
-                        <a href="/agent/${{agentId}}" class="text-green-400 hover:text-green-300 font-semibold">🤖 ${{agentName}}</a>
-                        <button onclick="logout()" class="bg-red-600 hover:bg-red-700 px-3 py-1 rounded text-sm">Logout</button>
-                    `;
+                    authNav.textContent = '';
+                    const link = document.createElement('a');
+                    link.href = '/agent/' + encodeURIComponent(agentId);
+                    link.className = 'text-green-400 hover:text-green-300 font-semibold';
+                    link.textContent = '\ud83e\udd16 ' + agentName;
+                    const btn = document.createElement('button');
+                    btn.className = 'bg-red-600 hover:bg-red-700 px-3 py-1 rounded text-sm';
+                    btn.textContent = 'Logout';
+                    btn.addEventListener('click', logout);
+                    authNav.appendChild(link);
+                    authNav.appendChild(btn);
                 }} else {{
                     authNav.innerHTML = `
                         <a href="/login" class="hover:text-green-500">Login</a>
@@ -4214,15 +4320,22 @@ async def post_page(post_id: int, db: Session = Depends(get_db)):
                     `;
                 }}
             }}
-            
+
             function logout() {{
                 localStorage.removeItem('csb_api_key');
                 localStorage.removeItem('csb_agent_name');
                 localStorage.removeItem('csb_agent_id');
                 window.location.href = '/';
             }}
-            
-            document.addEventListener('DOMContentLoaded', updateNav);
+
+            document.addEventListener('DOMContentLoaded', () => {{
+                updateNav();
+                document.querySelectorAll('.reply-btn').forEach(btn => {{
+                    btn.addEventListener('click', () => {{
+                        replyTo(btn.dataset.commentId, btn.dataset.agentName);
+                    }});
+                }});
+            }});
         </script>
     </body>
     </html>
@@ -4240,12 +4353,19 @@ NAV_SCRIPT = """
         const agentName = localStorage.getItem('csb_agent_name');
         const agentId = localStorage.getItem('csb_agent_id');
         const authNav = document.getElementById('auth-nav');
-        
+
         if (apiKey && agentName) {
-            authNav.innerHTML = `
-                <a href="/agent/${agentId}" class="text-green-400 hover:text-green-300 font-semibold">🤖 ${agentName}</a>
-                <button onclick="logout()" class="bg-red-600 hover:bg-red-700 px-3 py-1 rounded text-sm">Logout</button>
-            `;
+            authNav.textContent = '';
+            const link = document.createElement('a');
+            link.href = '/agent/' + encodeURIComponent(agentId);
+            link.className = 'text-green-400 hover:text-green-300 font-semibold';
+            link.textContent = '\ud83e\udd16 ' + agentName;
+            const btn = document.createElement('button');
+            btn.className = 'bg-red-600 hover:bg-red-700 px-3 py-1 rounded text-sm';
+            btn.textContent = 'Logout';
+            btn.addEventListener('click', logout);
+            authNav.appendChild(link);
+            authNav.appendChild(btn);
         } else {
             authNav.innerHTML = `
                 <a href="/login" class="hover:text-green-500">Login</a>
@@ -4253,14 +4373,14 @@ NAV_SCRIPT = """
             `;
         }
     }
-    
+
     function logout() {
         localStorage.removeItem('csb_api_key');
         localStorage.removeItem('csb_agent_name');
         localStorage.removeItem('csb_agent_id');
         window.location.href = '/';
     }
-    
+
     document.addEventListener('DOMContentLoaded', updateNav);
 </script>
 """
