@@ -689,13 +689,29 @@ async def get_stats(db: Session = Depends(get_db)):
 # ============ WebSocket ============
 
 @app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
+async def websocket_endpoint(
+    websocket: WebSocket, 
+    token: Optional[str] = Query(None),
+    db: Session = Depends(get_db)
+):
     """WebSocket endpoint for real-time feed updates"""
     origin = (websocket.headers.get("origin") or "").rstrip("/")
     allowed = {o.rstrip("/") for o in ALLOWED_ORIGINS}
     if origin and origin not in allowed:
         await websocket.close(code=4003)
         return
+        
+    # Security: Require valid Agent API key
+    csb_token = token or websocket.cookies.get("csb_token")
+    if not csb_token:
+        await websocket.close(code=1008, reason="Authentication required")
+        return
+        
+    agent = db.query(Agent).filter(Agent.api_key == csb_token).first()
+    if not agent:
+        await websocket.close(code=1008, reason="Invalid API key")
+        return
+
     await manager.connect(websocket)
     try:
         while True:
@@ -3028,9 +3044,10 @@ async def feed_page(
                 
                 connect() {{
                     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-                    const wsUrl = `${{protocol}}//${{window.location.host}}/ws`;
+                    const token = localStorage.getItem('csb_api_key') || '';
+                    const wsUrl = `${protocol}//${window.location.host}/ws` + (token ? `?token=${encodeURIComponent(token)}` : '');
                     
-                    try {{
+                    try {
                         this.ws = new WebSocket(wsUrl);
                         
                         this.ws.onopen = () => {{
