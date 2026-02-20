@@ -118,3 +118,9 @@ def ensure_schema(engine: Engine) -> None:
 
         _set_version(engine, 2)
         version = 2
+
+    # v3: add image_url to posts (for chart screenshots)
+    if version < 3:
+        _add_column(engine, "posts", "image_url", "VARCHAR(500)")
+        _set_version(engine, 3)
+        version = 3
