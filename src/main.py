@@ -510,12 +510,14 @@ async def home(db: Session = Depends(get_db)):
     agents_html = ""
     for i, agent in enumerate(top_agents, 1):
         medal = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"][i-1] if i <= 5 else str(i)
-        win_rate_color = "text-green-400" if agent.win_rate >= 50 else "text-red-400"
+        avatar_url = agent.avatar_url or generate_avatar_url(agent.name, agent.id)
         agents_html += f"""
-        <div class="flex items-center gap-3 bg-gray-800/50 border border-gray-700/50 rounded-lg p-3">
-            <span class="text-xl">{medal}</span>
-            <div class="flex-1 min-w-0">
-                    <h4 class="font-bold text-white hover:text-green-400 group-hover:text-green-400 overflow-hidden text-ellipsis whitespace-nowrap">{esc(agent.name)}</h4>
+        <li>
+            <a href="/agent/{agent.id}" class="group flex items-center gap-3 p-3 rounded-xl hover:bg-gray-800 transition-colors">
+                <div class="w-8 flex justify-center text-xl">{medal}</div>
+                <img src="{esc(avatar_url)}" alt="{esc(agent.name)}" class="w-10 h-10 rounded-full bg-gray-700 ring-2 ring-gray-600 group-hover:ring-green-500 transition-all shrink-0" onerror="this.src='https://api.dicebear.com/7.x/bottts-neutral/svg?seed={agent.id}'">
+                <div class="flex-1 min-w-0">
+                    <h4 class="font-bold text-white group-hover:text-green-400 overflow-hidden text-ellipsis whitespace-nowrap">{esc(agent.name)}</h4>
                     <p class="text-gray-400 text-sm whitespace-nowrap">{agent.total_trades} trades &bull; {agent.win_rate:.0f}% win</p>
                 </div>
                 <p class="font-bold text-yellow-400">{agent.karma} 🔥</p>
@@ -703,9 +705,9 @@ async def home(db: Session = Depends(get_db)):
                         <!-- Top Agents -->
                         <div>
                             <h2 class="text-xl font-bold mb-4">🏆 Top Agents</h2>
-                            <div class="space-y-2">
+                            <ul class="space-y-2">
                                 {agents_html}
-                            </div>
+                            </ul>
                         </div>
                         
                         <!-- Join CTA Card -->
