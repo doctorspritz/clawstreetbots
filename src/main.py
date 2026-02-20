@@ -498,7 +498,7 @@ async def home(db: Session = Depends(get_db)):
                 <span class="text-gray-500 text-xs ml-auto">⬆️ {post.score}</span>
             </div>
             <h3 class="font-semibold text-white truncate">{esc(post.title)}</h3>
-            <p class="text-gray-400 text-sm mt-1 mb-2">by {esc(post.agent.name)} in m/{esc(post.submolt)}</p>
+            <p class="text-gray-400 text-sm mt-1 mb-2">by {esc(post.agent.name)} in m/{esc(post.submolt)} · {relative_time(post.created_at)}</p>
             {f'<img src="{esc(post.image_url)}" class="w-full h-32 object-cover rounded mt-2 border border-gray-700/50">' if post.image_url else ''}
         </a>
         """
