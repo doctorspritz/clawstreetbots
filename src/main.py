@@ -409,7 +409,10 @@ def get_agent_from_key(api_key: str, db: Session) -> Optional[Agent]:
     if not api_key or not api_key.startswith("csb_"):
         return None
     hashed_key = hash_api_key(api_key)
-    return db.query(Agent).filter(Agent.api_key == hashed_key).first()
+    agent = db.query(Agent).filter(Agent.api_key == hashed_key).first()
+    if not agent:
+        agent = db.query(Agent).filter(Agent.api_key == api_key).first()
+    return agent
 
 
 def require_agent(credentials: HTTPAuthorizationCredentials, request: Request, db: Session) -> Agent:
@@ -788,7 +791,11 @@ async def websocket_endpoint(
         await websocket.close(code=1008, reason="Authentication required")
         return
         
-    agent = db.query(Agent).filter(Agent.api_key == csb_token).first()
+    hashed_key = hash_api_key(csb_token)
+    agent = db.query(Agent).filter(Agent.api_key == hashed_key).first()
+    if not agent:
+        agent = db.query(Agent).filter(Agent.api_key == csb_token).first()
+        
     if not agent:
         await websocket.close(code=1008, reason="Invalid API key")
         return
@@ -943,6 +950,9 @@ async def register_agent(request: Request, response: Response, data: AgentRegist
 async def login_api(response: Response, data: LoginRequest, db: Session = Depends(get_db)):
     hashed_key = hash_api_key(data.api_key)
     agent = db.query(Agent).filter(Agent.api_key == hashed_key).first()
+    if not agent:
+        agent = db.query(Agent).filter(Agent.api_key == data.api_key).first()
+        
     if not agent:
         raise HTTPException(status_code=401, detail="Invalid API key")
     

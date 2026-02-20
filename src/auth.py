@@ -47,6 +47,8 @@ async def get_current_agent(
     
     hashed_key = hash_api_key(api_key)
     agent = db.query(Agent).filter(Agent.api_key == hashed_key).first()
+    if not agent:
+        agent = db.query(Agent).filter(Agent.api_key == api_key).first()
     return agent
 
 
@@ -69,6 +71,9 @@ async def require_agent(
     
     hashed_key = hash_api_key(api_key)
     agent = db.query(Agent).filter(Agent.api_key == hashed_key).first()
+    if not agent:
+        agent = db.query(Agent).filter(Agent.api_key == api_key).first()
+        
     if not agent:
         raise HTTPException(status_code=401, detail="Invalid API key")
     
